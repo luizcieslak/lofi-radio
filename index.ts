@@ -19,6 +19,7 @@ type StationState = {
 	currentSongIndex: number
 	currentSongStartTime: number
 	isPlaying: boolean
+	sseClients: Set<WritableStreamDefaultWriter>
 }
 
 const createInitialState = (): StationState => ({
@@ -26,8 +27,10 @@ const createInitialState = (): StationState => ({
 	currentSongIndex: 0,
 	currentSongStartTime: Date.now(),
 	isPlaying: false,
+	sseClients: new Set(),
 })
 
+// Pure function to load songs
 const loadSongs = async (songsDir: string): Promise<Song[]> => {
 	const files = await readdir(songsDir)
 
@@ -93,6 +96,42 @@ const scheduleNextSong = (
 	}, currentSong.duration)
 }
 
+// Pure function to create metadata message
+const createMetadataMessage = (song: Song | null) => ({
+	type: 'metadata',
+	data: song?.metadata ?? null,
+	timestamp: Date.now(),
+})
+
+// SSE management functions
+const addSSEClient = (state: StationState, client: WritableStreamDefaultWriter): StationState => ({
+	...state,
+	sseClients: new Set([...state.sseClients, client]),
+})
+
+const removeSSEClient = (state: StationState, client: WritableStreamDefaultWriter): StationState => {
+	const newClients = new Set(state.sseClients)
+	newClients.delete(client)
+	return {
+		...state,
+		sseClients: newClients,
+	}
+}
+
+// Broadcast metadata to all clients
+const broadcastMetadata = (state: StationState) => {
+	const message = createMetadataMessage(getCurrentSong(state))
+	const encoder = new TextEncoder()
+	const data = encoder.encode(`data: ${JSON.stringify(message)}\n\n`)
+
+	state.sseClients.forEach(writer => {
+		writer.write(data).catch(() => {
+			// Handle failed writes - maybe remove the client
+			state = removeSSEClient(state, writer)
+		})
+	})
+}
+
 // Usage example (this would be your main station controller)
 const initializeStation = async () => {
 	let state = createInitialState()
@@ -107,78 +146,43 @@ const initializeStation = async () => {
 	// Handle state changes
 	const handleStateChange = (newState: StationState) => {
 		state = newState
+		broadcastMetadata(state)
 	}
 
-	const handleMetadataChange = () => {
-		// Will implement with SSE
-	}
+	scheduleNextSong(state, handleStateChange, () => {})
 
-	// Start scheduling
-	scheduleNextSong(state, handleStateChange, handleMetadataChange)
-
-	// Return functions to interact with the station
+	// Return extended interface
 	return {
 		getCurrentSong: () => getCurrentSong(state),
 		getCurrentBuffer: () => getCurrentBuffer(state),
 		getCurrentMetadata: () => getCurrentMetadata(state),
+		handleNewSSEConnection: (writer: WritableStreamDefaultWriter) => {
+			state = addSSEClient(state, writer)
+			// Send initial metadata to new client
+			const message = createMetadataMessage(getCurrentSong(state))
+			const encoder = new TextEncoder()
+			writer.write(encoder.encode(`data: ${JSON.stringify(message)}\n\n`))
+		},
+		handleSSEDisconnection: (writer: WritableStreamDefaultWriter) => {
+			state = removeSSEClient(state, writer)
+		},
 	}
 }
 
-async function getSongs(): Promise<Song[]> {
-	const songsDir = join(import.meta.dir, 'songs')
-	const files = await readdir(songsDir)
+// Create the station instance
+const station = await initializeStation()
 
-	return files
-		.filter(file => file.endsWith('.mp3'))
-		.map(file => ({
-			path: join(songsDir, file),
-			name: file.replace('.mp3', ''),
-		}))
-}
-
-let songs: Song[] = []
-let audioBuffer: ArrayBuffer | null = null
-
-async function initialize() {
-	songs = await getSongs()
-	console.log(`Loaded ${songs.length} songs`)
-
-	const buffers: ArrayBuffer[] = []
-	for (const song of songs) {
-		const file = Bun.file(song.path)
-		const buffer = await file.arrayBuffer()
-		buffers.push(buffer)
-	}
-	audioBuffer = concatenateArrayBuffers(buffers)
-	console.log('Audio buffer created')
-}
-
-// Helper function to concatenate ArrayBuffers
-function concatenateArrayBuffers(buffers: ArrayBuffer[]): ArrayBuffer {
-	const totalLength = buffers.reduce((acc, buf) => acc + buf.byteLength, 0)
-	const result = new Uint8Array(totalLength)
-	let offset = 0
-
-	for (const buffer of buffers) {
-		result.set(new Uint8Array(buffer), offset)
-		offset += buffer.byteLength
-	}
-
-	return result.buffer
-}
-
-// Initialize the server
-await initialize()
-
+// Modify your server to include SSE endpoint
 const server = Bun.serve({
 	port: 5634,
 	routes: {
 		'/stream': () => {
-			if (!audioBuffer) {
+			const buffer = station.getCurrentBuffer()
+			if (!buffer) {
 				return new Response('Audio not ready', { status: 503 })
 			}
 
-			return new Response(audioBuffer, {
+			return new Response(buffer, {
 				headers: {
 					'Content-Type': 'audio/mpeg',
 					'Accept-Ranges': 'bytes',
@@ -187,22 +191,71 @@ const server = Bun.serve({
 				},
 			})
 		},
+		'/metadata': () => {
+			let writer: WritableStreamDefaultWriter
+
+			const stream = new ReadableStream({
+				start(controller) {
+					const encoder = new TextEncoder()
+
+					// Store writer for later use
+					writer = controller
+
+					// Send initial metadata
+					const initialMetadata = createMetadataMessage(getCurrentSong(state))
+					controller.enqueue(encoder.encode(`data: ${JSON.stringify(initialMetadata)}\n\n`))
+
+					// Add to clients
+					station.handleNewSSEConnection(writer)
+				},
+				cancel() {
+					station.handleSSEDisconnection(writer)
+				},
+			})
+
+			return new Response(stream, {
+				headers: {
+					'Content-Type': 'text/event-stream',
+					'Cache-Control': 'no-cache',
+					Connection: 'keep-alive',
+					'Access-Control-Allow-Origin': '*',
+				},
+			})
+		},
 		'/test': () => {
 			const html = `
-			<!DOCTYPE html>
-			<html>
-					<head>
-							<title>Lofi Radio</title>
-					</head>
-					<body>
-							<h1>Lofi Radio Player</h1>
-							<audio controls autoplay>
-									<source src="/stream" type="audio/mpeg">
-									Your browser does not support the audio element.
-							</audio>
-					</body>
-			</html>
-	`
+					<!DOCTYPE html>
+					<html>
+							<head>
+									<title>Lofi Radio</title>
+							</head>
+							<body>
+									<h1>Lofi Radio Player</h1>
+									<div id="metadata">
+											<p>Title: <span id="title">-</span></p>
+											<p>Artist: <span id="artist">-</span></p>
+											<p>Album: <span id="album">-</span></p>
+											<img id="albumCover" src="" alt="Album Cover" style="max-width: 300px;">
+									</div>
+									<audio controls autoplay>
+											<source src="/stream" type="audio/mpeg">
+											Your browser does not support the audio element.
+									</audio>
+									<script>
+											const evtSource = new EventSource('/metadata');
+											evtSource.onmessage = function(event) {
+													const metadata = JSON.parse(event.data);
+													if (metadata.data) {
+															document.getElementById('title').textContent = metadata.data.title;
+															document.getElementById('artist').textContent = metadata.data.artist;
+															document.getElementById('album').textContent = metadata.data.album;
+															document.getElementById('albumCover').src = metadata.data.albumCover;
+													}
+											};
+									</script>
+							</body>
+					</html>
+					`
 			return new Response(html, {
 				headers: {
 					'Content-Type': 'text/html',
