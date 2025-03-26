@@ -4,6 +4,124 @@ import { readdir } from 'node:fs/promises'
 type Song = {
 	path: string
 	name: string
+	buffer: ArrayBuffer // Add buffer to the type
+	duration: number // We'll need this for timing
+	metadata: {
+		title: string
+		artist: string
+		album: string
+		albumCover: string
+	}
+}
+
+type StationState = {
+	songs: Song[]
+	currentSongIndex: number
+	currentSongStartTime: number
+	isPlaying: boolean
+}
+
+const createInitialState = (): StationState => ({
+	songs: [],
+	currentSongIndex: 0,
+	currentSongStartTime: Date.now(),
+	isPlaying: false,
+})
+
+const loadSongs = async (songsDir: string): Promise<Song[]> => {
+	const files = await readdir(songsDir)
+
+	const loadSong = async (file: string): Promise<Song | null> => {
+		if (!file.endsWith('.mp3')) return null
+
+		const path = join(songsDir, file)
+		const fileBuffer = await Bun.file(path).arrayBuffer()
+
+		return {
+			path,
+			name: file.replace('.mp3', ''),
+			buffer: fileBuffer,
+			duration: 0, // Would need implementation
+			metadata: {
+				title: file.replace('.mp3', ''),
+				artist: 'Unknown',
+				album: 'Unknown',
+				albumCover: 'https://placeholder.com/album.jpg',
+			},
+		}
+	}
+
+	const songPromises = files.map(loadSong)
+	const songs = (await Promise.all(songPromises)).filter((song): song is Song => song !== null)
+
+	return songs
+}
+
+// Pure functions for state updates
+const nextSong = (state: StationState): StationState => ({
+	...state,
+	currentSongIndex: (state.currentSongIndex + 1) % state.songs.length,
+	currentSongStartTime: Date.now(),
+})
+
+const startPlaying = (state: StationState): StationState => ({
+	...state,
+	isPlaying: true,
+})
+
+// Pure functions for queries
+const getCurrentSong = (state: StationState): Song | null => state.songs[state.currentSongIndex] || null
+
+const getCurrentBuffer = (state: StationState): ArrayBuffer | null => getCurrentSong(state)?.buffer || null
+
+const getCurrentMetadata = (state: StationState) => getCurrentSong(state)?.metadata || null
+
+// Side effects are isolated
+const scheduleNextSong = (
+	state: StationState,
+	onStateChange: (newState: StationState) => void,
+	onMetadataChange: () => void
+) => {
+	const currentSong = getCurrentSong(state)
+	if (!currentSong) return
+
+	setTimeout(() => {
+		const newState = nextSong(state)
+		onStateChange(newState)
+		onMetadataChange()
+		scheduleNextSong(newState, onStateChange, onMetadataChange)
+	}, currentSong.duration)
+}
+
+// Usage example (this would be your main station controller)
+const initializeStation = async () => {
+	let state = createInitialState()
+
+	// Load songs
+	const songs = await loadSongs(join(import.meta.dir, 'songs'))
+	state = { ...state, songs }
+
+	// Start playing
+	state = startPlaying(state)
+
+	// Handle state changes
+	const handleStateChange = (newState: StationState) => {
+		state = newState
+	}
+
+	const handleMetadataChange = () => {
+		// Will implement with SSE
+	}
+
+	// Start scheduling
+	scheduleNextSong(state, handleStateChange, handleMetadataChange)
+
+	// Return functions to interact with the station
+	return {
+		getCurrentSong: () => getCurrentSong(state),
+		getCurrentBuffer: () => getCurrentBuffer(state),
+		getCurrentMetadata: () => getCurrentMetadata(state),
+	}
 }
 
 async function getSongs(): Promise<Song[]> {
