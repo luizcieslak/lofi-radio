@@ -1,7 +1,8 @@
 import { join } from 'path'
 import { readdir } from 'node:fs/promises'
-import type { SongListItem } from './songs'
-import songList from './songs'
+import type { SongListItem } from './song-list'
+import songList from './song-list'
+import getSongDuration from './duration'
 
 type Song = {
 	path: string
@@ -38,12 +39,13 @@ const loadSongs = async (): Promise<Song[]> => {
 	const loadSongFromList = async (song: SongListItem): Promise<Song | null> => {
 		const path = join(songsDir, song.filename)
 		const fileBuffer = await Bun.file(path).arrayBuffer()
+		const duration = await getSongDuration(path)
 
 		return {
 			path,
 			name: song.filename.replace('.mp3', ''),
 			buffer: fileBuffer,
-			duration: song.duration,
+			duration,
 			metadata: {
 				title: song.title,
 				artist: song.artist,
@@ -73,9 +75,7 @@ const startPlaying = (state: StationState): StationState => ({
 
 // Pure functions for queries
 const getCurrentSong = (state: StationState): Song | null => state.songs[state.currentSongIndex] || null
-
 const getCurrentBuffer = (state: StationState): ArrayBuffer | null => getCurrentSong(state)?.buffer || null
-
 const getCurrentMetadata = (state: StationState) => getCurrentSong(state)?.metadata || null
 
 // Side effects are isolated

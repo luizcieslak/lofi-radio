@@ -4,12 +4,16 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/fluent-ffmpeg": "^2.1.27"
   },
   "scripts": {
     "dev": "bun --hot run index.ts"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "fluent-ffmpeg": "^2.1.3"
   }
 }
