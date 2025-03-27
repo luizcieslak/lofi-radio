@@ -238,8 +238,8 @@ const server = Bun.serve({
 		},
 		'/test': () => {
 			const html = `
-					<!DOCTYPE html>
-					    <html>
+        <!DOCTYPE html>
+        <html>
             <head>
                 <title>Lofi Radio</title>
             </head>
@@ -251,38 +251,50 @@ const server = Bun.serve({
                     <p>Album: <span id="album">-</span></p>
                     <img id="albumCover" src="" alt="Album Cover" style="max-width: 300px;">
                 </div>
-                <audio id="player" controls autoplay>
-                    <source src="/stream" type="audio/mpeg">
-                    Your browser does not support the audio element.
+                <button id="playButton">Play Radio</button>
+                <audio id="player" controls style="display:none">
+                    <source type="audio/mpeg">
                 </audio>
                 <script>
-								function connectSSE() {
-                        const evtSource = new EventSource('/metadata');
-                        const player = document.getElementById('player');
+                    let evtSource = null;
+                    const player = document.getElementById('player');
+                    const playButton = document.getElementById('playButton');
+                    let isPlaying = false;
+                    let shouldAutoPlay = false; // New flag to track if we should auto-play next song
+
+                    function updateButtonState() {
+                        playButton.textContent = isPlaying ? 'Stop Radio' : 'Play Radio';
+                    }
+
+                    function connectToRadio() {
+                        // Start SSE connection
+                        evtSource = new EventSource('/metadata');
                         
                         evtSource.onmessage = function(event) {
                             const metadata = JSON.parse(event.data);
-                        //     	if (player.paused) {
-												// 	console.info('Metadata received while player is paused, ignoring');
-												// 	return;
-												// }
-                        if (metadata.data) {
-												console.info('Metadata received');
+                            if (metadata.data) {
+                                console.info('Metadata received');
                                 document.getElementById('title').textContent = metadata.data.title;
                                 document.getElementById('artist').textContent = metadata.data.artist;
                                 document.getElementById('album').textContent = metadata.data.album;
                                 document.getElementById('albumCover').src = metadata.data.albumCover;
                                 
-                                player.src = '/stream?' + new Date().getTime();
-                                player.play().catch(console.error);
+                                // Update audio if we're playing or should auto-play
+                                if (isPlaying || shouldAutoPlay) {
+                                    player.src = '/stream?' + new Date().getTime();
+                                    shouldAutoPlay = isPlaying; // Maintain auto-play state for next song
+                                    player.play().catch(console.error);
+                                }
                             }
                         };
 
                         evtSource.onerror = function(err) {
                             console.warn('SSE connection error:', err);
-                            evtSource.close();
-                            // Attempt to reconnect after 1 second
-                            setTimeout(connectSSE, 1000);
+                            disconnectFromRadio();
+                            // Only reconnect if we're supposed to be playing
+                            if (isPlaying) {
+                                setTimeout(connectToRadio, 1000);
+                            }
                         };
 
                         evtSource.onopen = function() {
@@ -290,12 +302,56 @@ const server = Bun.serve({
                         };
                     }
 
-                    // Initial connection
-                    connectSSE();
+                    function disconnectFromRadio() {
+                        if (evtSource) {
+                            evtSource.close();
+                            evtSource = null;
+                        }
+                        player.src = '';
+                        player.load();
+                        shouldAutoPlay = false; // Reset auto-play state
+                    }
+
+                    playButton.addEventListener('click', () => {
+                        isPlaying = !isPlaying;
+                        shouldAutoPlay = isPlaying; // Set auto-play state when manually playing/stopping
+                        
+                        if (isPlaying) {
+                            connectToRadio();
+                            player.style.display = 'block';
+                        } else {
+                            disconnectFromRadio();
+                            player.style.display = 'none';
+                        }
+                        
+                        updateButtonState();
+                    });
+
+                    // Handle native audio player controls
+                    player.addEventListener('pause', () => {
+                        shouldAutoPlay = false; // Don't auto-play next song when manually paused
+                    });
+
+                    player.addEventListener('play', () => {
+                        isPlaying = true;
+                        shouldAutoPlay = true; // Enable auto-play when manually played
+                        if (!evtSource) {
+                            connectToRadio();
+                        }
+                        updateButtonState();
+                    });
+
+                    // Handle song ended event
+                    player.addEventListener('ended', () => {
+                        // Keep the shouldAutoPlay state as is - this allows continuous play
+                        console.log('Song ended, autoplay:', shouldAutoPlay);
+                    });
+
+                    updateButtonState();
                 </script>
             </body>
         </html>
-					`
+    `
 			return new Response(html, {
 				headers: {
 					'Content-Type': 'text/html',
