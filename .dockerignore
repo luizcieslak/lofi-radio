@@ -1,0 +1,4 @@
+node_modules
+songs/*
+data/*
+.git
