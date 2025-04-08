@@ -1,8 +1,8 @@
 import { join } from 'path'
-import { readdir } from 'node:fs/promises'
 import type { SongListItem } from './song-list'
 import songList from './song-list'
 import getSongDuration from './duration'
+import { networkInterfaces } from 'os'
 
 type Song = {
 	path: string
@@ -169,8 +169,9 @@ const initializeStation = async () => {
 // Create the station instance
 const station = await initializeStation()
 
-// Modify your server to include SSE endpoint
+const isLocalNetwork = process.argv.includes('--local')
 const server = Bun.serve({
+	hostname: isLocalNetwork ? '0.0.0.0' : 'localhost',
 	port: 5634,
 	routes: {
 		'/stream': () => {
@@ -361,4 +362,24 @@ const server = Bun.serve({
 	},
 })
 
-console.log(`Listening on http://localhost:${server.port} ...`)
+const getLocalIP = () => {
+	const nets = networkInterfaces()
+	for (const name of Object.keys(nets)) {
+		for (const net of nets[name]) {
+			// Skip internal and non-IPv4 addresses
+			if (!net.internal && net.family === 'IPv4') {
+				return net.address
+			}
+		}
+	}
+	return 'unknown'
+}
+
+if (isLocalNetwork) {
+	const localIP = getLocalIP()
+	console.log(`Listening on:
+  - Local:   http://localhost:${server.port}
+  - Network: http://${localIP}:${server.port}`)
+} else {
+	console.log(`Listening on http://localhost:${server.port} (localhost only)`)
+}
