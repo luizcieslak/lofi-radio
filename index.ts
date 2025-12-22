@@ -82,7 +82,7 @@ const getCurrentMetadata = (state: StationState) => getCurrentSong(state)?.metad
 const scheduleNextSong = (
 	state: StationState,
 	onStateChange: (newState: StationState) => void,
-	onMetadataChange: () => void
+	onMetadataChange: () => void,
 ) => {
 	const currentSong = getCurrentSong(state)
 	if (!currentSong) return
