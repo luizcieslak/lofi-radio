@@ -9,7 +9,7 @@
 import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { StreamEngine } from './streamEngine'
-import type { Track } from './types'
+import { playlist } from './playlist'
 
 // ============================================================================
 // EXPRESS SERVER
@@ -92,37 +92,12 @@ app.use(express.static(path.join(__dirname, '../public')))
 // START SERVER
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Demo playlist - replace with your actual tracks
-const demoPlaylist: Track[] = [
-	{
-		id: '1',
-		path: './audio/track1.mp3',
-		title: 'First Song',
-		artist: 'Artist One',
-		album: 'Demo Album',
-	},
-	{
-		id: '2',
-		path: './audio/track2.mp3',
-		title: 'Second Song',
-		artist: 'Artist Two',
-		album: 'Demo Album',
-	},
-	{
-		id: '3',
-		path: './audio/track3.mp3',
-		title: 'Third Song',
-		artist: 'Artist Three',
-		album: 'Another Album',
-	},
-]
-
 let playlistIndex = 0
 
 // Start the streaming engine in the background
 engine.start(async () => {
-	const track = demoPlaylist[playlistIndex]
-	playlistIndex = (playlistIndex + 1) % demoPlaylist.length
+	const track = playlist[playlistIndex]
+	playlistIndex = (playlistIndex + 1) % playlist.length
 	return track
 })
 
@@ -137,7 +112,7 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 // Start listening
-const PORT = process.env.PORT || 3000
+const PORT = process.env.PORT || 5634
 
 app.listen(PORT, () => {
 	console.log(`
