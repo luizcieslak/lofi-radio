@@ -8,8 +8,8 @@
 
 import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
+import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
-import { playlist } from './playlist'
 
 // ============================================================================
 // EXPRESS SERVER
@@ -82,6 +82,63 @@ app.post('/admin/skip', (req: Request, res: Response) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PLAYLIST MANAGEMENT API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Get all tracks in current order
+ */
+app.get('/api/tracks', (req: Request, res: Response) => {
+	res.json({
+		tracks: playlistManager.getTracks(),
+		currentIndex: playlistManager.getCurrentIndex(),
+	})
+})
+
+/**
+ * Reorder the playlist
+ * Body: { trackIds: string[] }
+ */
+app.post('/api/playlist/reorder', (req: Request, res: Response) => {
+	const { trackIds } = req.body
+
+	if (!Array.isArray(trackIds)) {
+		res.status(400).json({ error: 'trackIds must be an array' })
+		return
+	}
+
+	const success = playlistManager.reorderTracks(trackIds)
+
+	if (success) {
+		res.json({
+			success: true,
+			tracks: playlistManager.getTracks(),
+			currentIndex: playlistManager.getCurrentIndex(),
+		})
+	} else {
+		res.status(400).json({ error: 'Invalid track IDs provided' })
+	}
+})
+
+/**
+ * Reload playlist from disk
+ */
+app.post('/api/playlist/reload', (req: Request, res: Response) => {
+	playlistManager.reload()
+	res.json({
+		success: true,
+		tracks: playlistManager.getTracks(),
+	})
+})
+
+/**
+ * SSE endpoint for playlist updates
+ */
+app.get('/api/playlist/events', (req: Request, res: Response) => {
+	playlistManager.addSSEClient(res)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STATIC FILES (Web Player)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -92,12 +149,13 @@ app.use(express.static(path.join(__dirname, '../public')))
 // START SERVER
 // ─────────────────────────────────────────────────────────────────────────────
 
-let playlistIndex = 0
-
 // Start the streaming engine in the background
 engine.start(async () => {
-	const track = playlist[playlistIndex]
-	playlistIndex = (playlistIndex + 1) % playlist.length
+	const track = playlistManager.getNextTrack()
+	if (track) {
+		// Notify playlist manager of track change for SSE clients
+		playlistManager.notifyTrackChange(track)
+	}
 	return track
 })
 

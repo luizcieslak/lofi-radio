@@ -178,6 +178,19 @@
       font-size: 13px;
       color: rgba(255, 255, 255, 0.5);
     }
+
+    .manage-link {
+      display: inline-block;
+      margin-top: 20px;
+      color: rgba(255, 255, 255, 0.6);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.2s;
+    }
+
+    .manage-link:hover {
+      color: #fff;
+    }
   </style>
 </head>
 <body>
@@ -204,6 +217,7 @@
     <div class="status" id="status">Connecting...</div>
     <div class="error" id="error"></div>
     <div class="listeners" id="listeners"></div>
+    <a href="/manage.html" class="manage-link">Manage Playlist</a>
   </div>
 
   <!-- Hidden audio element -->
