@@ -17,7 +17,8 @@ const SONGS_DIR = path.join(__dirname, '../songs')
 
 class PlaylistManager {
 	private tracks: Track[] = []
-	private currentIndex: number = 0
+	private nextIndex: number = 0 // Index of the next track to play
+	private playingIndex: number = 0 // Index of the currently playing track (for UI)
 	private sseClients: Set<Response> = new Set()
 
 	constructor() {
@@ -60,17 +61,17 @@ class PlaylistManager {
 	}
 
 	/**
-	 * Get the current track index
+	 * Get the current track index (for UI display)
 	 */
 	getCurrentIndex(): number {
-		return this.currentIndex
+		return this.playingIndex
 	}
 
 	/**
 	 * Get the currently playing track
 	 */
 	getCurrentTrack(): Track | undefined {
-		return this.tracks[this.currentIndex]
+		return this.tracks[this.playingIndex]
 	}
 
 	/**
@@ -81,8 +82,8 @@ class PlaylistManager {
 			return undefined
 		}
 
-		const track = this.tracks[this.currentIndex]
-		this.currentIndex = (this.currentIndex + 1) % this.tracks.length
+		const track = this.tracks[this.nextIndex]
+		this.nextIndex = (this.nextIndex + 1) % this.tracks.length
 		return track
 	}
 
@@ -109,17 +110,24 @@ class PlaylistManager {
 			return false
 		}
 
-		// Get the currently playing track before reordering
-		const currentTrack = this.tracks[this.currentIndex]
+		// Get the currently playing track and the next track before reordering
+		const playingTrack = this.tracks[this.playingIndex]
+		const nextTrack = this.tracks[this.nextIndex]
 
 		// Apply new order
 		this.tracks = newOrder
 
-		// Find the new index of the currently playing track
-		if (currentTrack) {
-			const newIndex = this.tracks.findIndex(t => t.id === currentTrack.id)
-			if (newIndex !== -1) {
-				this.currentIndex = newIndex
+		// Find the new indices after reordering
+		if (playingTrack) {
+			const newPlayingIndex = this.tracks.findIndex(t => t.id === playingTrack.id)
+			if (newPlayingIndex !== -1) {
+				this.playingIndex = newPlayingIndex
+			}
+		}
+		if (nextTrack) {
+			const newNextIndex = this.tracks.findIndex(t => t.id === nextTrack.id)
+			if (newNextIndex !== -1) {
+				this.nextIndex = newNextIndex
 			}
 		}
 
@@ -164,7 +172,7 @@ class PlaylistManager {
 		const data = {
 			type: 'playlist',
 			tracks: this.tracks,
-			currentIndex: this.currentIndex,
+			currentIndex: this.playingIndex,
 		}
 		if (!res.writableEnded) {
 			res.write(`data: ${JSON.stringify(data)}\n\n`)
@@ -178,7 +186,7 @@ class PlaylistManager {
 		const data = {
 			type: 'playlist',
 			tracks: this.tracks,
-			currentIndex: this.currentIndex,
+			currentIndex: this.playingIndex,
 		}
 		const message = `data: ${JSON.stringify(data)}\n\n`
 
@@ -200,16 +208,16 @@ class PlaylistManager {
 	 * Notify clients that the current track has changed
 	 */
 	notifyTrackChange(track: Track): void {
-		// Find the track index
-		const index = this.tracks.findIndex(t => t.id === track.id)
-		if (index !== -1) {
-			this.currentIndex = index
+		// Find the track index and update playingIndex for UI display
+		const trackIndex = this.tracks.findIndex(t => t.id === track.id)
+		if (trackIndex !== -1) {
+			this.playingIndex = trackIndex
 		}
 
 		const data = {
 			type: 'trackChange',
 			track,
-			currentIndex: this.currentIndex,
+			currentIndex: this.playingIndex,
 		}
 		const message = `data: ${JSON.stringify(data)}\n\n`
 
@@ -232,7 +240,8 @@ class PlaylistManager {
 	 */
 	reload(): void {
 		this.loadTracksFromDisk()
-		this.currentIndex = 0
+		this.nextIndex = 0
+		this.playingIndex = 0
 		this.broadcastPlaylistUpdate()
 	}
 }
