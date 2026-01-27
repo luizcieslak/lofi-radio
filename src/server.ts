@@ -8,8 +8,8 @@
 
 import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
+import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
-import { playlist } from './playlist'
 
 // ============================================================================
 // EXPRESS SERVER
@@ -82,6 +82,27 @@ app.post('/admin/skip', (req: Request, res: Response) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PLAYLIST API
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Get all tracks and current playing index
+ */
+app.get('/api/tracks', (req: Request, res: Response) => {
+	res.json({
+		tracks: playlistManager.getTracks(),
+		currentIndex: playlistManager.getCurrentIndex(),
+	})
+})
+
+/**
+ * SSE endpoint for playlist/track updates
+ */
+app.get('/api/playlist/events', (req: Request, res: Response) => {
+	playlistManager.addSSEClient(res)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // STATIC FILES (Web Player)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -92,12 +113,13 @@ app.use(express.static(path.join(__dirname, '../public')))
 // START SERVER
 // ─────────────────────────────────────────────────────────────────────────────
 
-let playlistIndex = 0
-
 // Start the streaming engine in the background
 engine.start(async () => {
-	const track = playlist[playlistIndex]
-	playlistIndex = (playlistIndex + 1) % playlist.length
+	const track = playlistManager.getNextTrack()
+	if (track) {
+		// Notify playlist manager of track change for SSE clients
+		playlistManager.notifyTrackChange(track)
+	}
 	return track
 })
 

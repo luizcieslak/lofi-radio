@@ -1,8 +1,8 @@
+import { networkInterfaces } from 'os'
 import { join } from 'path'
+import getSongDuration from './duration'
 import type { SongListItem } from './song-list'
 import songList from './song-list'
-import getSongDuration from './duration'
-import { networkInterfaces } from 'os'
 
 type Song = {
 	path: string

@@ -18,7 +18,7 @@ const SONGS_DIR = path.join(__dirname, '../songs')
  */
 function generatePlaylist(): Track[] {
 	const files = fs.readdirSync(SONGS_DIR)
-	const mp3Files = files.filter((file) => file.toLowerCase().endsWith('.mp3'))
+	const mp3Files = files.filter(file => file.toLowerCase().endsWith('.mp3'))
 
 	const playlist: Track[] = mp3Files.map((filename, index) => {
 		// Remove .mp3 extension for the title
