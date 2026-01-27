@@ -82,11 +82,11 @@ app.post('/admin/skip', (req: Request, res: Response) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PLAYLIST MANAGEMENT API
+// PLAYLIST API
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Get all tracks in current order
+ * Get all tracks and current playing index
  */
 app.get('/api/tracks', (req: Request, res: Response) => {
 	res.json({
@@ -96,43 +96,7 @@ app.get('/api/tracks', (req: Request, res: Response) => {
 })
 
 /**
- * Reorder the playlist
- * Body: { trackIds: string[] }
- */
-app.post('/api/playlist/reorder', (req: Request, res: Response) => {
-	const { trackIds } = req.body
-
-	if (!Array.isArray(trackIds)) {
-		res.status(400).json({ error: 'trackIds must be an array' })
-		return
-	}
-
-	const success = playlistManager.reorderTracks(trackIds)
-
-	if (success) {
-		res.json({
-			success: true,
-			tracks: playlistManager.getTracks(),
-			currentIndex: playlistManager.getCurrentIndex(),
-		})
-	} else {
-		res.status(400).json({ error: 'Invalid track IDs provided' })
-	}
-})
-
-/**
- * Reload playlist from disk
- */
-app.post('/api/playlist/reload', (req: Request, res: Response) => {
-	playlistManager.reload()
-	res.json({
-		success: true,
-		tracks: playlistManager.getTracks(),
-	})
-})
-
-/**
- * SSE endpoint for playlist updates
+ * SSE endpoint for playlist/track updates
  */
 app.get('/api/playlist/events', (req: Request, res: Response) => {
 	playlistManager.addSSEClient(res)

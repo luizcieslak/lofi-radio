@@ -15,34 +15,41 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
       background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
       min-height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
       color: #fff;
+      padding: 20px;
     }
 
-    .player {
+    .container {
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    .player-card {
       background: rgba(255, 255, 255, 0.1);
       backdrop-filter: blur(10px);
       border-radius: 20px;
-      padding: 40px;
-      width: 100%;
-      max-width: 400px;
-      text-align: center;
+      padding: 30px;
+      margin-bottom: 20px;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     }
 
+    .player-content {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
     .album-art {
-      width: 200px;
-      height: 200px;
+      width: 80px;
+      height: 80px;
       border-radius: 10px;
-      margin: 0 auto 30px;
       background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 80px;
+      font-size: 32px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      flex-shrink: 0;
       overflow: hidden;
     }
 
@@ -53,48 +60,45 @@
     }
 
     .track-info {
-      margin-bottom: 30px;
+      flex: 1;
+      min-width: 0;
     }
 
-    .title {
-      font-size: 24px;
+    .track-info .title {
+      font-size: 18px;
       font-weight: 600;
-      margin-bottom: 8px;
-      color: #fff;
-    }
-
-    .artist {
-      font-size: 16px;
-      color: rgba(255, 255, 255, 0.7);
       margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .album {
+    .track-info .artist {
       font-size: 14px;
-      color: rgba(255, 255, 255, 0.5);
+      color: rgba(255, 255, 255, 0.7);
     }
 
     .controls {
       display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 20px;
-      margin-bottom: 30px;
+      gap: 15px;
+      margin-top: 20px;
     }
 
     .play-btn {
-      width: 70px;
-      height: 70px;
+      width: 50px;
+      height: 50px;
       border-radius: 50%;
       border: none;
       background: #fff;
       color: #1a1a2e;
-      font-size: 24px;
+      font-size: 18px;
       cursor: pointer;
       display: flex;
       align-items: center;
       justify-content: center;
       transition: transform 0.2s, box-shadow 0.2s;
+      flex-shrink: 0;
     }
 
     .play-btn:hover {
@@ -109,17 +113,17 @@
     .volume-container {
       display: flex;
       align-items: center;
-      gap: 10px;
-      justify-content: center;
+      gap: 8px;
+      flex: 1;
     }
 
     .volume-icon {
-      font-size: 20px;
+      font-size: 16px;
       opacity: 0.7;
     }
 
     .volume-slider {
-      width: 150px;
+      flex: 1;
       height: 6px;
       border-radius: 3px;
       -webkit-appearance: none;
@@ -131,25 +135,37 @@
     .volume-slider::-webkit-slider-thumb {
       -webkit-appearance: none;
       appearance: none;
-      width: 16px;
-      height: 16px;
+      width: 14px;
+      height: 14px;
       border-radius: 50%;
       background: #fff;
       cursor: pointer;
     }
 
     .volume-slider::-moz-range-thumb {
-      width: 16px;
-      height: 16px;
+      width: 14px;
+      height: 14px;
       border-radius: 50%;
       background: #fff;
       cursor: pointer;
       border: none;
     }
 
-    .status {
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
       font-size: 12px;
       color: rgba(255, 255, 255, 0.5);
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
 
     .status.live {
@@ -157,8 +173,11 @@
     }
 
     .status.live::before {
-      content: "●";
-      margin-right: 6px;
+      content: "";
+      width: 8px;
+      height: 8px;
+      background: #4ade80;
+      border-radius: 50%;
       animation: pulse 2s infinite;
     }
 
@@ -169,85 +188,196 @@
 
     .error {
       color: #f87171;
+      font-size: 12px;
       margin-top: 10px;
-      font-size: 14px;
     }
 
-    .listeners {
-      margin-top: 20px;
-      font-size: 13px;
+    .playlist-card {
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border-radius: 20px;
+      padding: 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .playlist-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+
+    .playlist-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .playlist-header .track-count {
+      font-size: 12px;
       color: rgba(255, 255, 255, 0.5);
     }
 
-    .manage-link {
-      display: inline-block;
-      margin-top: 20px;
-      color: rgba(255, 255, 255, 0.6);
-      text-decoration: none;
-      font-size: 14px;
-      transition: color 0.2s;
+    .track-list {
+      list-style: none;
+      max-height: 400px;
+      overflow-y: auto;
     }
 
-    .manage-link:hover {
-      color: #fff;
+    .track-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      margin-bottom: 6px;
+    }
+
+    .track-item.playing {
+      background: linear-gradient(135deg, rgba(102, 126, 234, 0.3) 0%, rgba(118, 75, 162, 0.3) 100%);
+      border: 1px solid rgba(102, 126, 234, 0.5);
+    }
+
+    .track-item.playing .playing-indicator {
+      display: flex;
+    }
+
+    .track-number {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.5);
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      flex-shrink: 0;
+    }
+
+    .playing-indicator {
+      display: none;
+      align-items: flex-end;
+      gap: 2px;
+      height: 14px;
+    }
+
+    .playing-indicator span {
+      width: 3px;
+      background: #4ade80;
+      border-radius: 1px;
+      animation: soundbar 0.6s ease-in-out infinite;
+    }
+
+    .playing-indicator span:nth-child(1) { height: 60%; animation-delay: 0s; }
+    .playing-indicator span:nth-child(2) { height: 100%; animation-delay: 0.15s; }
+    .playing-indicator span:nth-child(3) { height: 40%; animation-delay: 0.3s; }
+    .playing-indicator span:nth-child(4) { height: 80%; animation-delay: 0.45s; }
+
+    @keyframes soundbar {
+      0%, 100% { transform: scaleY(1); }
+      50% { transform: scaleY(0.5); }
+    }
+
+    .track-details {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .track-details .track-title {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track-details .track-artist {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 30px;
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 13px;
+    }
+
+    @media (max-width: 500px) {
+      .player-content {
+        flex-direction: column;
+        text-align: center;
+      }
+
+      .track-info {
+        text-align: center;
+      }
     }
   </style>
 </head>
 <body>
-  <div class="player">
-    <div class="album-art" id="albumArt">
-      🎵
+  <div class="container">
+    <!-- Player Card -->
+    <div class="player-card">
+      <div class="player-content">
+        <div class="album-art" id="albumArt">🎵</div>
+        <div class="track-info">
+          <div class="title" id="title">Loading...</div>
+          <div class="artist" id="artist">-</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="play-btn" id="playBtn">▶</button>
+        <div class="volume-container">
+          <span class="volume-icon">🔊</span>
+          <input type="range" class="volume-slider" id="volume" min="0" max="1" step="0.05" value="0.8">
+        </div>
+      </div>
+
+      <div class="status-bar">
+        <div class="status" id="status">Connecting...</div>
+        <div id="listeners"></div>
+      </div>
+      <div class="error" id="error"></div>
     </div>
-    
-    <div class="track-info">
-      <div class="title" id="title">Loading...</div>
-      <div class="artist" id="artist">-</div>
-      <div class="album" id="album">-</div>
+
+    <!-- Playlist Card -->
+    <div class="playlist-card">
+      <div class="playlist-header">
+        <h2>Playlist</h2>
+        <span class="track-count" id="trackCount">0 tracks</span>
+      </div>
+      <ul class="track-list" id="trackList">
+        <li class="empty-state">Loading tracks...</li>
+      </ul>
     </div>
-    
-    <div class="controls">
-      <button class="play-btn" id="playBtn">▶</button>
-    </div>
-    
-    <div class="volume-container">
-      <span class="volume-icon">🔊</span>
-      <input type="range" class="volume-slider" id="volume" min="0" max="1" step="0.05" value="0.8">
-    </div>
-    
-    <div class="status" id="status">Connecting...</div>
-    <div class="error" id="error"></div>
-    <div class="listeners" id="listeners"></div>
-    <a href="/manage.html" class="manage-link">Manage Playlist</a>
   </div>
 
-  <!-- Hidden audio element -->
   <audio id="audio" preload="none"></audio>
 
   <script>
-    // =========================================================================
-    // PLAYER LOGIC
-    // =========================================================================
-
     const audio = document.getElementById('audio');
     const playBtn = document.getElementById('playBtn');
     const volumeSlider = document.getElementById('volume');
     const titleEl = document.getElementById('title');
     const artistEl = document.getElementById('artist');
-    const albumEl = document.getElementById('album');
     const albumArtEl = document.getElementById('albumArt');
     const statusEl = document.getElementById('status');
     const errorEl = document.getElementById('error');
     const listenersEl = document.getElementById('listeners');
+    const trackListEl = document.getElementById('trackList');
+    const trackCountEl = document.getElementById('trackCount');
 
     let isPlaying = false;
+    let tracks = [];
+    let currentIndex = 0;
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // AUDIO CONTROLS
-    // ─────────────────────────────────────────────────────────────────────────
-
+    // Audio Controls
     function play() {
-      // Set the stream source (with cache buster to ensure fresh connection)
-      audio.src = '/stream?' + Date.now();
+      audio.src = `/stream?${Date.now()}`;
       audio.play()
         .then(() => {
           isPlaying = true;
@@ -256,7 +386,7 @@
           statusEl.className = 'status live';
           errorEl.textContent = '';
         })
-        .catch((err) => {
+        .catch(err => {
           console.error('Play error:', err);
           errorEl.textContent = 'Failed to play. Click play again.';
         });
@@ -264,7 +394,7 @@
 
     function pause() {
       audio.pause();
-      audio.src = ''; // Disconnect from stream
+      audio.src = '';
       isPlaying = false;
       playBtn.textContent = '▶';
       statusEl.textContent = 'Paused';
@@ -272,23 +402,14 @@
     }
 
     playBtn.addEventListener('click', () => {
-      if (isPlaying) {
-        pause();
-      } else {
-        play();
-      }
+      isPlaying ? pause() : play();
     });
 
-    volumeSlider.addEventListener('input', (e) => {
+    volumeSlider.addEventListener('input', e => {
       audio.volume = e.target.value;
     });
 
-    // Set initial volume
     audio.volume = volumeSlider.value;
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // AUDIO EVENTS
-    // ─────────────────────────────────────────────────────────────────────────
 
     audio.addEventListener('waiting', () => {
       statusEl.textContent = 'Buffering...';
@@ -300,103 +421,145 @@
       statusEl.className = 'status live';
     });
 
-    audio.addEventListener('error', (e) => {
-      console.error('Audio error:', e);
+    audio.addEventListener('error', () => {
       errorEl.textContent = 'Stream error. Reconnecting...';
-      
-      // Auto-reconnect after 3 seconds
       if (isPlaying) {
-        setTimeout(() => {
-          play();
-        }, 3000);
+        setTimeout(play, 3000);
       }
     });
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // METADATA UPDATES (Server-Sent Events)
-    // ─────────────────────────────────────────────────────────────────────────
-
-    function connectSSE() {
-      const events = new EventSource('/now-playing/events');
-
-      events.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data);
-          updateTrackInfo(data.track);
-        } catch (err) {
-          console.error('SSE parse error:', err);
-        }
-      };
-
-      events.onerror = (e) => {
-        console.error('SSE error:', e);
-        // EventSource will auto-reconnect
-      };
-    }
-
+    // Track Info
     function updateTrackInfo(track) {
       if (!track) {
         titleEl.textContent = 'No track playing';
         artistEl.textContent = '-';
-        albumEl.textContent = '-';
+        return;
+      }
+      titleEl.textContent = track.title || 'Unknown Title';
+      artistEl.textContent = track.artist || 'Unknown Artist';
+      albumArtEl.innerHTML = track.albumArtUrl
+        ? `<img src="${track.albumArtUrl}" alt="Album Art">`
+        : '🎵';
+    }
+
+    // Playlist Rendering
+    function renderTrackList() {
+      if (tracks.length === 0) {
+        trackListEl.innerHTML = '<li class="empty-state">No tracks found</li>';
+        trackCountEl.textContent = '0 tracks';
         return;
       }
 
-      titleEl.textContent = track.title || 'Unknown Title';
-      artistEl.textContent = track.artist || 'Unknown Artist';
-      albumEl.textContent = track.album || '';
+      trackCountEl.textContent = `${tracks.length} track${tracks.length !== 1 ? 's' : ''}`;
+      trackListEl.innerHTML = tracks.map((track, index) => `
+        <li class="track-item${index === currentIndex ? ' playing' : ''}" data-id="${track.id}">
+          <div class="track-number">${index + 1}</div>
+          <div class="playing-indicator">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <div class="track-details">
+            <div class="track-title">${escapeHtml(track.title)}</div>
+            <div class="track-artist">${escapeHtml(track.artist)}</div>
+          </div>
+        </li>
+      `).join('');
+    }
 
-      // Update album art
-      if (track.albumArtUrl) {
-        albumArtEl.innerHTML = `<img src="${track.albumArtUrl}" alt="Album Art">`;
-      } else {
-        albumArtEl.innerHTML = '🎵';
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    function updateCurrentTrack(index) {
+      currentIndex = index;
+      const items = trackListEl.querySelectorAll('.track-item');
+      items.forEach((item, i) => {
+        item.classList.toggle('playing', i === currentIndex);
+      });
+      if (tracks[currentIndex]) {
+        updateTrackInfo(tracks[currentIndex]);
       }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // STATUS POLLING (for listener count)
-    // ─────────────────────────────────────────────────────────────────────────
+    // SSE for playlist updates
+    function connectPlaylistSSE() {
+      const events = new EventSource('/api/playlist/events');
+      events.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.type === 'playlist') {
+            tracks = data.tracks;
+            currentIndex = data.currentIndex;
+            renderTrackList();
+          } else if (data.type === 'trackChange') {
+            currentIndex = data.currentIndex;
+            updateCurrentTrack(currentIndex);
+            if (data.track) updateTrackInfo(data.track);
+          }
+        } catch (err) {
+          console.error('SSE parse error:', err);
+        }
+      };
+    }
 
+    // SSE for now-playing updates
+    function connectNowPlayingSSE() {
+      const events = new EventSource('/now-playing/events');
+      events.onmessage = e => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data.track) {
+            updateTrackInfo(data.track);
+            const trackIndex = tracks.findIndex(t => t.id === data.track.id);
+            if (trackIndex !== -1 && trackIndex !== currentIndex) {
+              updateCurrentTrack(trackIndex);
+            }
+          }
+        } catch (err) {
+          console.error('Now playing SSE error:', err);
+        }
+      };
+    }
+
+    // Status polling
     async function updateStatus() {
       try {
         const res = await fetch('/status');
         const data = await res.json();
-        
         if (data.listenerCount !== undefined) {
-          const count = data.listenerCount;
-          listenersEl.textContent = `${count} listener${count !== 1 ? 's' : ''} online`;
+          listenersEl.textContent = `${data.listenerCount} listener${data.listenerCount !== 1 ? 's' : ''}`;
         }
-      } catch (err) {
-        console.error('Status fetch error:', err);
-      }
+      } catch (err) {}
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // INITIAL SETUP
-    // ─────────────────────────────────────────────────────────────────────────
+    // Init
+    async function init() {
+      try {
+        const res = await fetch('/api/tracks');
+        const data = await res.json();
+        tracks = data.tracks;
+        currentIndex = data.currentIndex;
+        renderTrackList();
+      } catch (err) {
+        trackListEl.innerHTML = '<li class="empty-state">Failed to load tracks</li>';
+      }
 
-    // Fetch initial track info
-    fetch('/now-playing')
-      .then(res => res.json())
-      .then(data => {
-        if (data.track) {
-          updateTrackInfo(data.track);
-        }
+      try {
+        const res = await fetch('/now-playing');
+        const data = await res.json();
+        if (data.track) updateTrackInfo(data.track);
         statusEl.textContent = 'Ready - Click play';
         statusEl.className = 'status';
-      })
-      .catch(err => {
-        console.error('Initial fetch error:', err);
-        errorEl.textContent = 'Could not connect to server';
-      });
+      } catch (err) {}
 
-    // Connect to SSE for live updates
-    connectSSE();
+      connectPlaylistSSE();
+      connectNowPlayingSSE();
+      updateStatus();
+      setInterval(updateStatus, 10000);
+    }
 
-    // Poll status every 10 seconds
-    updateStatus();
-    setInterval(updateStatus, 10000);
+    init();
   </script>
 </body>
 </html>
