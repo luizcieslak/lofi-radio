@@ -10,9 +10,10 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Response } from 'express'
-import type { Track } from './types'
+import type { PlaylistState, Track } from './types'
 
 const SONGS_DIR = path.join(__dirname, '../songs')
+const STATE_FILE = path.join(__dirname, 'state/state.json')
 
 class PlaylistManager {
 	private tracks: Track[] = []
@@ -22,6 +23,7 @@ class PlaylistManager {
 
 	constructor() {
 		this.loadTracksFromDisk()
+		this.loadState()
 	}
 
 	private loadTracksFromDisk(): void {
@@ -123,6 +125,119 @@ class PlaylistManager {
 				this.sseClients.delete(client)
 			}
 		}
+
+		// Persist state after track change
+		this.saveState()
+	}
+
+	/**
+	 * Load persisted state from disk
+	 */
+	private loadState(): void {
+		try {
+			if (!fs.existsSync(STATE_FILE)) {
+				console.log('[PlaylistManager] No state file found, starting fresh')
+				return
+			}
+
+			const stateData = fs.readFileSync(STATE_FILE, 'utf-8')
+			const state: PlaylistState = JSON.parse(stateData)
+
+			console.log('[PlaylistManager] Loading state from', STATE_FILE)
+			this.reconcilePlaylist(state)
+		} catch (err) {
+			console.error('[PlaylistManager] Failed to load state:', err)
+			console.log('[PlaylistManager] Starting with fresh state')
+		}
+	}
+
+	/**
+	 * Save current state to disk
+	 */
+	private saveState(): void {
+		try {
+			// Ensure state directory exists
+			const stateDir = path.dirname(STATE_FILE)
+			if (!fs.existsSync(stateDir)) {
+				fs.mkdirSync(stateDir, { recursive: true })
+			}
+
+			// Extract filenames from current playlist
+			const playlistOrder = this.tracks.map(track => path.basename(track.path))
+
+			const state: PlaylistState = {
+				playlistOrder,
+				currentTrackFilename:
+					this.playingIndex >= 0 && this.playingIndex < this.tracks.length
+						? path.basename(this.tracks[this.playingIndex].path)
+						: null,
+				currentTrackIndex: this.playingIndex,
+				lastUpdated: Date.now(),
+			}
+
+			fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8')
+			console.log('[PlaylistManager] State saved:', state.currentTrackFilename)
+		} catch (err) {
+			console.error('[PlaylistManager] Failed to save state:', err)
+		}
+	}
+
+	/**
+	 * Reconcile saved playlist state with current disk contents
+	 */
+	private reconcilePlaylist(state: PlaylistState): void {
+		console.log('[PlaylistManager] Reconciling playlist...')
+
+		// Get current files on disk
+		const diskFiles = new Set(this.tracks.map(t => path.basename(t.path)))
+		const savedOrder = state.playlistOrder
+
+		// Build reconciled playlist
+		const reconciledFilenames: string[] = []
+
+		// 1. Add songs from saved order that still exist on disk
+		for (const filename of savedOrder) {
+			if (diskFiles.has(filename)) {
+				reconciledFilenames.push(filename)
+				diskFiles.delete(filename) // Mark as processed
+			} else {
+				console.log(`[PlaylistManager] Skipping missing file: ${filename}`)
+			}
+		}
+
+		// 2. Append new songs found on disk (not in saved order)
+		for (const newFile of diskFiles) {
+			console.log(`[PlaylistManager] Adding new file: ${newFile}`)
+			reconciledFilenames.push(newFile)
+		}
+
+		// 3. Rebuild tracks array with reconciled order
+		this.tracks = reconciledFilenames.map((filename, index) => {
+			const title = filename.replace(/\.mp3$/i, '')
+			return {
+				id: String(index + 1),
+				path: `./songs/${filename}`,
+				title,
+				artist: 'Unknown Artist',
+				album: 'Lofi Collection',
+			}
+		})
+
+		// 4. Find current track index
+		if (state.currentTrackFilename) {
+			const resumeIndex = reconciledFilenames.indexOf(state.currentTrackFilename)
+			if (resumeIndex !== -1) {
+				this.nextIndex = resumeIndex
+				this.playingIndex = resumeIndex
+				console.log(`[PlaylistManager] Resuming from: ${state.currentTrackFilename} (index ${resumeIndex})`)
+			} else {
+				console.log('[PlaylistManager] Current track not found, starting from beginning')
+				this.nextIndex = 0
+				this.playingIndex = 0
+			}
+		}
+
+		console.log(`[PlaylistManager] Reconciliation complete: ${this.tracks.length} tracks`)
 	}
 }
 

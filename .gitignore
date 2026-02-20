@@ -38,3 +38,6 @@ src/playlist.ts
 
 # Songs directory (user-specific)
 songs/
+
+# Runtime state (user-specific)
+src/state/state.json

@@ -12,6 +12,7 @@
 - 🎨 **Beautiful web player UI** with playlist management
 - 🐳 **Docker support** for easy deployment
 - 📦 **Dynamic playlist loading** from local MP3 files
+- 💾 **Playlist persistence** - Maintains playlist order and resume position across restarts
 
 ---
 
@@ -60,12 +61,20 @@ Nanosecond-accuracy timing system using `process.hrtime.bigint()`:
 
 #### 4. **PlaylistManager** ([src/playlistManager.ts](src/playlistManager.ts))
 
-Manages the track queue:
+Manages the track queue with persistence:
 
 - Loads MP3 files from `songs/` directory
 - Tracks current playing index
 - Notifies SSE clients of track changes
 - Provides playlist API
+- **Persists playlist state** to `src/state/state.json`
+- **Reconciles playlists** on startup (maintains order, handles added/removed songs)
+
+**Key Methods:**
+
+- `loadState()` - Loads persisted state from disk on startup
+- `saveState()` - Saves current playlist order and track position to JSON
+- `reconcilePlaylist(state)` - Merges saved playlist with current disk contents
 
 #### 5. **Express Server** ([src/server.ts](src/server.ts))
 
@@ -100,8 +109,10 @@ lofi-radio/
 │   ├── server.ts           # Express server & API routes
 │   ├── streamEngine.ts     # Core streaming engine
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
-│   ├── playlistManager.ts  # Playlist management
-│   └── types.ts            # TypeScript interfaces
+│   ├── playlistManager.ts  # Playlist management with persistence
+│   ├── types.ts            # TypeScript interfaces
+│   └── state/
+│       └── state.json      # Persisted playlist state (gitignored)
 ├── public/
 │   └── index.html          # Web player UI
 ├── songs/                  # MP3 files directory (auto-scanned)
@@ -126,6 +137,9 @@ lofi-radio/
 1. **Startup:**
 
    - `PlaylistManager` scans `songs/` directory for MP3 files
+   - Loads persisted state from `src/state/state.json` if it exists
+   - Reconciles saved playlist with current disk contents
+   - Resumes from last playing track (or starts fresh)
    - `StreamEngine` starts and requests first track from `PlaylistManager`
    - Express server listens on port 5634
 
@@ -150,6 +164,7 @@ lofi-radio/
    - When track ends, `PlaylistManager.getNextTrack()` is called
    - New track starts streaming
    - SSE clients receive metadata update
+   - **State is automatically saved** to `state.json`
    - Web UI updates automatically
 
 ### Synchronization Strategy
@@ -162,6 +177,45 @@ lofi-radio/
 - PreciseTimer ensures frames are sent at exact intervals matching the MP3 encoding
 - New clients join mid-stream and hear whatever is currently playing
 
+### Playlist Persistence
+
+**Problem:** Server restarts lose playlist order and playback position.
+
+**Solution:** Automatic state persistence with smart reconciliation
+
+**State File Location:** `src/state/state.json` (gitignored)
+
+**State Structure:**
+
+```json
+{
+  "playlistOrder": ["track1.mp3", "track2.mp3", ...],
+  "currentTrackFilename": "track2.mp3",
+  "currentTrackIndex": 1,
+  "lastUpdated": 1771604009107
+}
+```
+
+**How It Works:**
+
+1. **On Track Change:** State automatically saves to `state.json`
+2. **On Startup:** Loads saved state and reconciles with disk
+3. **Reconciliation Logic:**
+   - Maintains saved playlist order
+   - Removes songs no longer on disk
+   - Appends new songs to end
+   - Resumes from saved track (or starts fresh if missing)
+
+**Edge Cases Handled:**
+
+| Scenario             | Behavior                                  |
+| -------------------- | ----------------------------------------- |
+| Current song removed | Skips missing file, starts from beginning |
+| New songs added      | Appends to end of playlist                |
+| Playlist unchanged   | Resumes from exact saved position         |
+
+**Future Enhancement:** Frame-precise resume (currently resumes at track start)
+
 ---
 
 ## Current Implementation Status
@@ -173,6 +227,7 @@ lofi-radio/
 - Real-time metadata via SSE
 - Web player UI with playlist
 - Dynamic playlist from `songs/` folder
+- **Playlist persistence** - Resumes from last track on restart
 - Docker deployment
 - Graceful shutdown
 - CORS support
@@ -204,14 +259,10 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 
    - Anyone can access `/admin/*` endpoints
 
-3. **Fixed playlist order**
+3. **Track-level persistence only**
 
-   - No shuffle or repeat modes
-   - Loops playlist sequentially
-
-4. **No persistence**
-   - Current track position lost on restart
-   - No "resume from" functionality
+   - Resumes from start of saved track (not mid-song)
+   - Frame-precise resume not yet implemented
 
 ---
 
@@ -238,11 +289,11 @@ There are **TWO implementations** in this repository:
 
 ## Next Steps / Improvement Roadmap
 
-- Extract or sync music metadata
-- Streamline playlist management - Add, remove and reorder tracks
+- Extract or sync music metadata (ID3 tags)
+- Streamline playlist management - Add, remove and reorder tracks via API
 - Authentication & Authorization
-- Persistence - Save current playlist order to JSON file and remember current track index on restart
-- Enhanced Web UI - Queue management
+- **Frame-precise persistence** - Resume mid-song (currently resumes at track start)
+- Enhanced Web UI - Queue management, drag-and-drop reordering
 - Volume Normalization - Analyze tracks and normalize loudness
 - Statistics & Analytics - Track listen counts, peak listener count, most played tracks, listener duration
 

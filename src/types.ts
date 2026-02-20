@@ -19,3 +19,10 @@ export interface NowPlaying {
 	track: Track
 	startedAt: number
 }
+
+export interface PlaylistState {
+	playlistOrder: string[] // Array of filenames in order
+	currentTrackFilename: string | null
+	currentTrackIndex: number
+	lastUpdated: number
+}
