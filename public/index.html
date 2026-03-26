@@ -305,6 +305,100 @@
       font-size: 13px;
     }
 
+    /* Upload UI Styles */
+    .upload-zone {
+      border: 2px dashed rgba(255, 255, 255, 0.3);
+      border-radius: 12px;
+      padding: 40px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: #667eea;
+      background: rgba(102, 126, 234, 0.1);
+    }
+
+    .upload-btn {
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: none;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      font-size: 14px;
+    }
+
+    .upload-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .upload-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .file-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    .file-item-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-right: 10px;
+    }
+
+    .file-item-size {
+      color: rgba(255, 255, 255, 0.5);
+      font-size: 11px;
+      margin-right: 10px;
+    }
+
+    .file-item-remove {
+      background: rgba(255, 107, 107, 0.2);
+      border: none;
+      color: #ff6b6b;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    .admin-toggle {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      border: none;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      font-size: 24px;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s;
+      z-index: 1000;
+    }
+
+    .admin-toggle:hover {
+      transform: scale(1.1);
+    }
+
     @media (max-width: 500px) {
       .player-content {
         flex-direction: column;
@@ -313,6 +407,14 @@
 
       .track-info {
         text-align: center;
+      }
+
+      .admin-toggle {
+        bottom: 15px;
+        right: 15px;
+        width: 50px;
+        height: 50px;
+        font-size: 20px;
       }
     }
   </style>
@@ -354,7 +456,59 @@
         <li class="empty-state">Loading tracks...</li>
       </ul>
     </div>
+
+    <!-- Admin Upload Card -->
+    <div class="player-card" id="adminCard" style="display: none;">
+      <div class="playlist-header" style="margin-bottom: 15px;">
+        <h2>🔐 Admin Upload</h2>
+        <button class="close-btn" id="closeAdmin" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">✕</button>
+      </div>
+
+      <div class="upload-section">
+        <div class="auth-section" id="authSection">
+          <p style="color: rgba(255,255,255,0.7); margin-bottom: 10px; font-size: 14px;">Enter API key to upload songs:</p>
+          <div style="display: flex; gap: 10px;">
+            <input type="password" id="apiKeyInput" placeholder="API Key" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-size: 14px;">
+            <button id="authBtn" class="upload-btn">Unlock</button>
+          </div>
+          <div id="authError" style="color: #ff6b6b; margin-top: 10px; font-size: 13px;"></div>
+        </div>
+
+        <div class="upload-interface" id="uploadInterface" style="display: none;">
+          <div class="upload-zone" id="uploadZone">
+            <input type="file" id="fileInput" multiple accept=".mp3" style="display: none;">
+            <div class="upload-prompt">
+              <div style="font-size: 48px; margin-bottom: 10px;">📁</div>
+              <div style="font-size: 16px; font-weight: 600; margin-bottom: 5px;">Drop MP3 files here</div>
+              <div style="font-size: 13px; color: rgba(255,255,255,0.6);">or click to browse</div>
+              <div style="font-size: 12px; color: rgba(255,255,255,0.5); margin-top: 10px;">Multiple files supported (up to 50MB each)</div>
+            </div>
+          </div>
+
+          <div id="fileList" style="margin-top: 15px;"></div>
+
+          <button id="uploadBtn" class="upload-btn" style="width: 100%; margin-top: 15px; display: none;">
+            Upload <span id="fileCount"></span>
+          </button>
+
+          <div id="uploadProgress" style="margin-top: 15px; display: none;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px;">
+              <span id="progressText">Uploading...</span>
+              <span id="progressPercent">0%</span>
+            </div>
+            <div style="background: rgba(255,255,255,0.1); border-radius: 10px; height: 8px; overflow: hidden;">
+              <div id="progressBar" style="background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); height: 100%; width: 0%; transition: width 0.3s;"></div>
+            </div>
+          </div>
+
+          <div id="uploadResult" style="margin-top: 15px; padding: 12px; border-radius: 8px; display: none;"></div>
+        </div>
+      </div>
+    </div>
   </div>
+
+  <!-- Floating Admin Button -->
+  <button class="admin-toggle" id="adminToggle" title="Admin Upload">🔐</button>
 
   <audio id="audio" preload="none"></audio>
 
@@ -558,6 +712,195 @@
       updateStatus();
       setInterval(updateStatus, 10000);
     }
+
+    // ========================================================================
+    // ADMIN UPLOAD FUNCTIONALITY
+    // ========================================================================
+
+    let apiKey = localStorage.getItem('radio_api_key') || '';
+    let selectedFiles = [];
+
+    const adminToggle = document.getElementById('adminToggle');
+    const adminCard = document.getElementById('adminCard');
+    const closeAdmin = document.getElementById('closeAdmin');
+    const authSection = document.getElementById('authSection');
+    const uploadInterface = document.getElementById('uploadInterface');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const authBtn = document.getElementById('authBtn');
+    const authError = document.getElementById('authError');
+    const uploadZone = document.getElementById('uploadZone');
+    const fileInput = document.getElementById('fileInput');
+    const fileList = document.getElementById('fileList');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const fileCount = document.getElementById('fileCount');
+    const uploadProgress = document.getElementById('uploadProgress');
+    const progressText = document.getElementById('progressText');
+    const progressPercent = document.getElementById('progressPercent');
+    const progressBar = document.getElementById('progressBar');
+    const uploadResult = document.getElementById('uploadResult');
+
+    // Toggle admin panel
+    adminToggle.addEventListener('click', () => {
+      adminCard.style.display = 'block';
+      adminToggle.style.display = 'none';
+      if (apiKey) {
+        authSection.style.display = 'none';
+        uploadInterface.style.display = 'block';
+      }
+    });
+
+    closeAdmin.addEventListener('click', () => {
+      adminCard.style.display = 'none';
+      adminToggle.style.display = 'block';
+    });
+
+    // Authentication
+    authBtn.addEventListener('click', async () => {
+      const key = apiKeyInput.value.trim();
+      if (!key) {
+        authError.textContent = 'Please enter an API key';
+        return;
+      }
+
+      authError.textContent = '';
+      authBtn.disabled = true;
+      authBtn.textContent = 'Verifying...';
+
+      try {
+        const response = await fetch('/admin/songs', {
+          headers: { 'X-API-Key': key }
+        });
+
+        if (response.ok) {
+          apiKey = key;
+          localStorage.setItem('radio_api_key', key);
+          authSection.style.display = 'none';
+          uploadInterface.style.display = 'block';
+        } else {
+          authError.textContent = 'Invalid API key';
+          apiKey = '';
+          localStorage.removeItem('radio_api_key');
+        }
+      } catch (err) {
+        authError.textContent = 'Connection error';
+      } finally {
+        authBtn.disabled = false;
+        authBtn.textContent = 'Unlock';
+      }
+    });
+
+    // File selection
+    uploadZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', (e) => {
+      addFiles(Array.from(e.target.files));
+      e.target.value = '';
+    });
+
+    // Drag and drop
+    uploadZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      uploadZone.classList.add('drag-over');
+    });
+
+    uploadZone.addEventListener('dragleave', () => {
+      uploadZone.classList.remove('drag-over');
+    });
+
+    uploadZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      uploadZone.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer.files).filter(f => f.name.endsWith('.mp3'));
+      addFiles(files);
+    });
+
+    function addFiles(files) {
+      selectedFiles = [...selectedFiles, ...files];
+      renderFileList();
+    }
+
+    function removeFile(index) {
+      selectedFiles.splice(index, 1);
+      renderFileList();
+    }
+
+    function renderFileList() {
+      if (selectedFiles.length === 0) {
+        fileList.innerHTML = '';
+        uploadBtn.style.display = 'none';
+        return;
+      }
+
+      fileList.innerHTML = selectedFiles.map((file, index) => `
+        <div class="file-item">
+          <div class="file-item-name">🎵 ${file.name}</div>
+          <div class="file-item-size">${(file.size / 1024 / 1024).toFixed(2)} MB</div>
+          <button class="file-item-remove" onclick="window.removeFileAt(${index})">✕</button>
+        </div>
+      `).join('');
+
+      uploadBtn.style.display = 'block';
+      fileCount.textContent = `${selectedFiles.length} file(s)`;
+    }
+
+    window.removeFileAt = removeFile; // Make it globally accessible for inline onclick
+
+    // Upload files
+    uploadBtn.addEventListener('click', async () => {
+      if (selectedFiles.length === 0) return;
+
+      uploadBtn.disabled = true;
+      uploadProgress.style.display = 'block';
+      uploadResult.style.display = 'none';
+
+      let uploaded = 0;
+      const total = selectedFiles.length;
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        progressText.textContent = `Uploading ${file.name}...`;
+
+        try {
+          const formData = new FormData();
+          formData.append('song', file);
+
+          const response = await fetch('/admin/upload', {
+            method: 'POST',
+            headers: { 'X-API-Key': apiKey },
+            body: formData
+          });
+
+          if (response.ok) {
+            uploaded++;
+          } else {
+            console.error(`Failed to upload ${file.name}`);
+          }
+        } catch (err) {
+          console.error(`Error uploading ${file.name}:`, err);
+        }
+
+        const percent = Math.round(((i + 1) / total) * 100);
+        progressPercent.textContent = `${percent}%`;
+        progressBar.style.width = `${percent}%`;
+      }
+
+      // Done
+      uploadProgress.style.display = 'none';
+      uploadResult.style.display = 'block';
+      uploadResult.style.background = uploaded === total
+        ? 'rgba(74, 222, 128, 0.2)'
+        : 'rgba(251, 191, 36, 0.2)';
+      uploadResult.style.color = uploaded === total ? '#4ade80' : '#fbbf24';
+      uploadResult.innerHTML = `
+        <strong>${uploaded}/${total} files uploaded successfully!</strong>
+        ${uploaded < total ? '<br>Some files failed to upload. Check console for details.' : ''}
+      `;
+
+      selectedFiles = [];
+      renderFileList();
+      uploadBtn.disabled = false;
+
+      // Playlist will auto-update via SSE
+    });
 
     init();
   </script>
