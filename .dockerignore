@@ -1,5 +1,4 @@
 node_modules
-songs/*
 src/state/*
 .git
 .gitignore
@@ -11,3 +10,4 @@ src/state/*
 .DS_Store
 .env.local
 .env.*.local
+# Note: songs/ is NOT excluded - it's needed in the Docker image

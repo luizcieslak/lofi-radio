@@ -2,6 +2,8 @@
 
 This guide covers deploying lofi-radio using Docker or Docker Compose for local development or self-hosted servers.
 
+**Note:** This guide uses volume mounts for easy song management. For Railway deployment, see [Railway guide](railway.md) which uses a different approach.
+
 ## Quick Start with Docker Compose (Recommended)
 
 ### 1. Add Your Songs

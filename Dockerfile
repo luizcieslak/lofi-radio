@@ -13,10 +13,11 @@ RUN bun install --production
 
 COPY . .
 
-# Create directories for volumes
+# Create directories for volumes (Railway will mount here)
 RUN mkdir -p /app/songs /app/src/state
 
-VOLUME ["/app/songs"]
+# NOTE: Railway volumes are configured in the dashboard, not Dockerfile
+# The VOLUME keyword is banned by Railway - use Railway dashboard instead
 
 # Railway will provide PORT env var, but expose default for local testing
 EXPOSE 5634

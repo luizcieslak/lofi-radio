@@ -12,71 +12,102 @@
    railway login
    ```
 
+## Deployment Method: Docker Image with Songs
+
+lofi-radio uses a **Docker image approach** where your songs are included in the container image. This is the simplest and most reliable method for Railway deployment.
+
+### Why This Approach?
+
+- ✅ **Simple:** Just deploy, no file uploads needed
+- ✅ **Reliable:** Songs are part of the image, always available
+- ✅ **Fast deploys:** Railway optimizes Docker layer caching
+- ✅ **Works with GitHub:** Auto-deploys on push
+- ⚠️ **Tradeoff:** ~5-10s downtime when updating songs (rebuild required)
+
+**Note:** Railway SSH does not support file piping/uploads, so volume-based approaches don't work reliably.
+
 ## Initial Setup
 
-### 1. Create New Project
+### 1. Prepare Your Songs
 
 ```bash
-railway init
+# Add your MP3 files to the songs folder
+mkdir -p songs
+cp /path/to/your/music/*.mp3 songs/
+
+# Verify songs are added
+ls -lh songs/
 ```
 
-Or link to existing project:
+**Important:** Songs are gitignored (won't go to GitHub) but will be included in the Docker build.
+
+### 2. Create Railway Project
+
 ```bash
+# Initialize new project
+railway init
+
+# Or link to existing project
 railway link
 ```
 
-### 2. Create Volume for Songs
+### 3. Deploy
 
-In Railway Dashboard:
-1. Go to your project
-2. Click on your service
-3. Go to **"Volumes"** tab
-4. Click **"New Volume"**
-5. Configure:
-   - **Mount Path:** `/app/songs`
-   - **Size:** 1 GB (more than enough for 250MB+ songs)
-6. Click **"Add Volume"**
-
-### 3. Upload Songs to Volume
-
-**Option A: Using Railway CLI (Recommended)**
+**Option A: Deploy from Local (First Time)**
 
 ```bash
-# Mount the volume locally
-railway volume mount songs
-
-# This creates a local mount point. Copy your songs:
-rsync -avz --progress ./songs/ /path/to/mounted/volume/
-
-# Unmount when done
-railway volume unmount songs
+railway up
 ```
 
-**Option B: Using Railway Shell**
+This builds your Docker image (including songs) and deploys to Railway.
+
+**Option B: Deploy from GitHub (Recommended for Production)**
 
 ```bash
-# Open shell in running container
-railway shell
+# Connect Railway to your GitHub repo in the dashboard:
+# Railway Dashboard → Settings → Connect Repo
 
-# In another terminal, copy files to the container
-railway cp ./songs /app/songs
-
-# Or use scp/rsync through railway proxy
+# Then just push to deploy
+git push origin main
+# Railway auto-deploys
 ```
 
-**Option C: Manual Upload via Dashboard**
-
-Railway doesn't have file upload UI yet, so CLI is the best option.
-
-### 4. Deploy
+### 4. Access Your Radio
 
 ```bash
-# Deploy from GitHub (recommended)
+# Open in browser
+railway open
+
+# Or get the URL
+railway domain
+```
+
+## Updating Songs
+
+### Add or Remove Songs
+
+```bash
+# 1. Update your local songs folder
+cp new-song.mp3 songs/
+rm songs/old-song.mp3
+
+# 2. Redeploy
 railway up
 
-# Or deploy from local directory
-railway up --detach
+# Or if using GitHub:
+git add songs/
+git commit -m "Update playlist"
+git push origin main
 ```
+
+**Downtime:** ~5-10 seconds during deployment switchover. Railway does:
+1. Builds new image with updated songs
+2. Starts new container
+3. Health checks pass
+4. Routes traffic to new container
+5. Shuts down old container
+
+Active listeners will be disconnected briefly and need to reconnect.
 
 ## Configuration
 
@@ -85,44 +116,13 @@ railway up --detach
 Railway automatically provides:
 - `PORT` - Your app already reads this via `process.env.PORT`
 
-**No additional env vars needed!**
+**No additional configuration needed!**
 
-### Volume Persistence
-
-The volume at `/app/songs` will persist across:
-- ✅ Deployments
-- ✅ Restarts
-- ✅ Crashes
-- ✅ Rollbacks
-
-Your `state.json` file in `src/state/` will also persist as it's written to the container filesystem.
-
-## Updating Songs
-
-### Add New Songs
+### Custom Domain
 
 ```bash
-# Mount volume
-railway volume mount songs
-
-# Copy new songs
-cp new-song.mp3 /path/to/mounted/volume/
-
-# Restart service to pick up new songs
-railway restart
-
-# Unmount
-railway volume unmount songs
-```
-
-### Replace All Songs
-
-```bash
-railway volume mount songs
-rm -rf /path/to/mounted/volume/*
-rsync -avz ./songs/ /path/to/mounted/volume/
-railway restart
-railway volume unmount songs
+# Add custom domain in Railway dashboard
+# Settings → Domains → Add Domain
 ```
 
 ## Monitoring
@@ -131,6 +131,9 @@ railway volume unmount songs
 
 ```bash
 railway logs
+
+# Follow logs in real-time
+railway logs --follow
 ```
 
 ### Check Status
@@ -139,27 +142,32 @@ railway logs
 railway status
 ```
 
-### Open in Browser
+### Check Build Progress
 
 ```bash
-railway open
+# During deployment
+railway logs --deployment
 ```
-
-Or visit: `https://<your-service>.railway.app`
 
 ## Troubleshooting
 
 ### "No tracks available"
 
-**Cause:** Volume not mounted or songs not uploaded
+**Cause:** Songs folder is empty or wasn't included in build
 
 **Fix:**
 ```bash
-railway shell
-ls -la /app/songs  # Check if songs exist
+# Check .dockerignore doesn't exclude songs/
+cat .dockerignore | grep songs
+
+# Should NOT see "songs/*" - if you do, remove it
 ```
 
-If empty, follow **"Upload Songs to Volume"** steps above.
+### Build Timeout
+
+**Cause:** Songs library too large (>2GB)
+
+**Fix:** Consider using external storage (S3/CDN) for very large libraries
 
 ### Port Binding Issues
 
@@ -167,111 +175,83 @@ If empty, follow **"Upload Songs to Volume"** steps above.
 
 **Fix:** Already handled! `src/server.ts` reads `process.env.PORT || 5634`
 
-### Build Failures
+### Slow Builds
 
-**Cause:** Large build context
+**Cause:** Large songs folder or no layer caching
 
-**Fix:** Already handled via `.dockerignore` - songs excluded from build
-
-### Volume Not Persisting
-
-**Cause:** Volume mount path mismatch
-
-**Fix:** Ensure volume mount path is exactly `/app/songs` in Railway dashboard
-
-### State Not Persisting
-
-**Cause:** `state.json` is written to container filesystem (not volume)
-
-**Solution:** Already works! Railway containers have persistent storage for non-volume files. However, if you want extra durability:
-
-1. Create second volume: `/app/src/state`
-2. Or: Write state to existing `/app/songs` volume (e.g., `/app/songs/.state.json`)
-
-## Deployment Workflow
-
-### Standard Deploy
-
-```bash
-git add .
-git commit -m "Update server"
-git push origin main
-```
-
-Railway auto-deploys on push (if connected to GitHub).
-
-### Quick Deploy Without Git
-
-```bash
-railway up --detach
-```
-
-### Rollback
-
-```bash
-railway rollback
-```
+**Optimization:**
+- Railway caches Docker layers, but songs changes force rebuild
+- Keep song updates infrequent
+- Consider grouping multiple song changes into one deploy
 
 ## Cost Estimation
 
-**Railway Free Tier:**
-- ✅ 1 GB volume (covers 250MB songs)
-- ✅ $5/month free credit
-- ✅ Should be enough for low-traffic radio
+**Railway Pricing (as of 2024):**
 
-**Paid Usage:**
-- Volume: Included in plan
-- Compute: ~$0.000463/min (~$20/month for 24/7)
-- Bandwidth: First 100GB free
+- **Hobby Plan:** $5/month credit
+- **Compute:** ~$0.000463/min
+- **Bandwidth:** First 100GB free
 
 **Estimate for 24/7 streaming:**
-- 10 concurrent listeners @ 128kbps MP3
-- ~500GB/month bandwidth
+- Compute: ~$20/month
+- 10 concurrent listeners @ 128kbps = ~500GB/month bandwidth
 - **Total: ~$20-30/month**
 
-## Advanced: Multiple Environments
+For lower traffic, the $5/month free credit may be sufficient!
 
-### Staging
+## Advanced: Zero-Downtime Updates
 
-```bash
-railway environment staging
-railway up
+If 5-10s downtime is unacceptable, you can implement an HTTP upload endpoint:
+
+### Option 1: Add Upload API
+
+```typescript
+// In src/server.ts
+import multer from 'multer'
+
+const upload = multer({ dest: '/app/songs' })
+
+app.post('/admin/upload-song', upload.single('file'), (req, res) => {
+  playlistManager.rescan()
+  res.json({ success: true })
+})
 ```
 
-### Production
-
+Then upload without rebuilding:
 ```bash
-railway environment production
-railway up
+curl -F "file=@new-song.mp3" https://your-app.railway.app/admin/upload-song
 ```
 
-Each environment can have its own volume and songs.
+**Pros:** Zero downtime, no rebuild
+**Cons:** Requires code changes, needs authentication
 
-## Backup Songs
+### Option 2: Use Railway Volume
 
-Since songs are in a volume:
+1. Create volume in Railway dashboard (`/app/songs`)
+2. Initial upload via upload API above
+3. Songs persist across deploys
+4. Update via API without rebuilding
 
-```bash
-# Backup
-railway volume mount songs
-tar -czf songs-backup.tar.gz /path/to/mounted/volume
-railway volume unmount songs
+**Note:** If using volume, remove songs from Docker image to avoid conflicts.
 
-# Restore
-railway volume mount songs
-tar -xzf songs-backup.tar.gz -C /path/to/mounted/volume
-railway volume unmount songs
-```
+## Workflow Comparison
+
+| Method | Downtime | Complexity | Best For |
+|--------|----------|-----------|----------|
+| Docker Image (current) | 5-10s | Low | Most use cases |
+| HTTP Upload API | None | Medium | Frequent updates |
+| Railway Volume + API | None | High | Large libraries |
 
 ## Next Steps
 
-1. **Set up custom domain** (if desired): Railway dashboard → Domains
-2. **Add monitoring:** Railway dashboard → Observability
-3. **Scale up:** Railway dashboard → Settings → Increase resources
-4. **Add CD pipeline:** Already enabled via GitHub integration
+1. ✅ Deploy: `railway up`
+2. ✅ Test: `railway open`
+3. ✅ Monitor: `railway logs --follow`
+4. ✅ Custom domain (optional)
+5. ✅ Set up GitHub auto-deploy (recommended)
 
 ## Resources
 
 - [Railway Docs](https://docs.railway.app/)
-- [Railway Volumes](https://docs.railway.app/guides/volumes)
 - [Railway CLI](https://docs.railway.app/develop/cli)
+- [Railway Pricing](https://railway.app/pricing)
