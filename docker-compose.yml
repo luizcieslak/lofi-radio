@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  lofi-radio:
+    build: .
+    container_name: lofi-radio
+    ports:
+      - "${PORT:-5634}:5634"
+    volumes:
+      # Mount your local songs folder
+      - ./songs:/app/songs
+      # Persist state across restarts
+      - ./src/state:/app/src/state
+    environment:
+      - PORT=5634
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5634/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

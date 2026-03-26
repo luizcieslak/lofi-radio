@@ -14,14 +14,12 @@ RUN bun install --production
 COPY . .
 
 # Create directories for volumes
-RUN mkdir -p /app/songs /app/data
+RUN mkdir -p /app/songs /app/src/state
 
-VOLUME ["/app/songs", "/app/data"]
+VOLUME ["/app/songs"]
 
-# # TEST: move already created files to volume
-# COPY ./songs /app/songs
-
+# Railway will provide PORT env var, but expose default for local testing
 EXPOSE 5634
 
-# Run in production mode, enabling local network access
-CMD ["bun", "run", "index.ts", "--host"]
+# Run the Express server (not legacy index.ts)
+CMD ["bun", "run", "src/server.ts"]

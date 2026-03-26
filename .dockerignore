@@ -1,4 +1,13 @@
 node_modules
 songs/*
-data/*
+src/state/*
 .git
+.gitignore
+*.md
+!CLAUDE.md
+.vscode
+.idea
+*.log
+.DS_Store
+.env.local
+.env.*.local

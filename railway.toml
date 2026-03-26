@@ -1,0 +1,13 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "bun run src/server.ts"
+healthcheckPath = "/status"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+# Railway will automatically set PORT env var
+# Your app already reads process.env.PORT so no extra config needed
