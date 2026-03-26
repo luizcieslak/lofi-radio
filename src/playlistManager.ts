@@ -59,6 +59,36 @@ class PlaylistManager {
 		return this.playingIndex
 	}
 
+	/**
+	 * Rescan songs directory and reload tracks
+	 * Useful after uploading/deleting songs
+	 */
+	rescan(): void {
+		console.log('[PlaylistManager] Rescanning songs directory...')
+		this.loadTracksFromDisk()
+
+		// Notify all SSE clients of playlist update
+		const data = {
+			type: 'playlist',
+			tracks: this.tracks,
+			currentIndex: this.playingIndex,
+		}
+		const message = `data: ${JSON.stringify(data)}\n\n`
+
+		for (const client of this.sseClients) {
+			try {
+				if (!client.writableEnded) {
+					client.write(message)
+				}
+			} catch (err) {
+				console.error('[PlaylistManager SSE] Broadcast error:', err)
+				this.sseClients.delete(client)
+			}
+		}
+
+		console.log(`[PlaylistManager] Rescan complete: ${this.tracks.length} tracks`)
+	}
+
 	getNextTrack(): Track | undefined {
 		if (this.tracks.length === 0) {
 			return undefined
