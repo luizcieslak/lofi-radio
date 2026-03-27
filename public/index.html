@@ -847,6 +847,24 @@
       }, 5000);
     });
 
+    // Detect unexpected pause (stream dropped without error event)
+    audio.addEventListener('pause', () => {
+      console.log('[Audio] Pause event, isPlaying:', isPlaying);
+      // If we didn't initiate the pause, try to reconnect
+      if (isPlaying) {
+        console.log('[Audio] Unexpected pause, reconnecting...');
+        reconnect();
+      }
+    });
+
+    // Handle stream end
+    audio.addEventListener('ended', () => {
+      console.log('[Audio] Ended event');
+      if (isPlaying) {
+        reconnect();
+      }
+    });
+
     // Reset reconnect counter on successful play
     audio.addEventListener('playing', () => {
       reconnectAttempts = 0;
