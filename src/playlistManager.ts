@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Response } from 'express'
+import { metadataManager } from './metadataManager'
 import type { PlaylistState, Track } from './types'
 
 const SONGS_DIR = path.join(__dirname, '../songs')
@@ -38,13 +39,18 @@ class PlaylistManager {
 		const mp3Files = files.filter(file => file.toLowerCase().endsWith('.mp3'))
 
 		this.tracks = mp3Files.map((filename, index) => {
-			const title = filename.replace(/\.mp3$/i, '')
+			// Try to get stored metadata, fallback to filename
+			const meta = metadataManager.get(filename)
+			const fallbackTitle = filename.replace(/\.mp3$/i, '').replace(/[-_]/g, ' ')
+
 			return {
 				id: String(index + 1),
 				path: `./songs/${filename}`,
-				title,
-				artist: 'Unknown Artist',
-				album: 'Lofi Collection',
+				title: meta?.title || fallbackTitle,
+				artist: meta?.artist || 'Unknown Artist',
+				album: meta?.album || undefined,
+				albumArtUrl: meta?.albumArtUrl || undefined,
+				durationMs: meta?.durationMs || undefined,
 			}
 		})
 
@@ -195,12 +201,11 @@ class PlaylistManager {
 			// Extract filenames from current playlist
 			const playlistOrder = this.tracks.map(track => path.basename(track.path))
 
+			const currentTrack = this.tracks[this.playingIndex]
 			const state: PlaylistState = {
 				playlistOrder,
 				currentTrackFilename:
-					this.playingIndex >= 0 && this.playingIndex < this.tracks.length
-						? path.basename(this.tracks[this.playingIndex].path)
-						: null,
+					currentTrack ? path.basename(currentTrack.path) : null,
 				currentTrackIndex: this.playingIndex,
 				lastUpdated: Date.now(),
 			}
@@ -243,13 +248,18 @@ class PlaylistManager {
 
 		// 3. Rebuild tracks array with reconciled order
 		this.tracks = reconciledFilenames.map((filename, index) => {
-			const title = filename.replace(/\.mp3$/i, '')
+			// Try to get stored metadata, fallback to filename
+			const meta = metadataManager.get(filename)
+			const fallbackTitle = filename.replace(/\.mp3$/i, '').replace(/[-_]/g, ' ')
+
 			return {
 				id: String(index + 1),
 				path: `./songs/${filename}`,
-				title,
-				artist: 'Unknown Artist',
-				album: 'Lofi Collection',
+				title: meta?.title || fallbackTitle,
+				artist: meta?.artist || 'Unknown Artist',
+				album: meta?.album || undefined,
+				albumArtUrl: meta?.albumArtUrl || undefined,
+				durationMs: meta?.durationMs || undefined,
 			}
 		})
 

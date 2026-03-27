@@ -6,10 +6,11 @@
  * Streams MP3 files to multiple listeners in sync with live metadata updates.
  */
 
-import * as path from 'node:path'
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
+import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
 
@@ -145,11 +146,14 @@ app.get('/status', (req: Request, res: Response) => {
  * Headers: X-API-Key: <your-api-key>
  * Body: multipart/form-data with 'song' field
  */
-app.post('/admin/upload', requireAuth, upload.single('song'), (req: Request, res: Response) => {
+app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Request, res: Response) => {
 	if (!req.file) {
 		res.status(400).json({ error: 'No file uploaded' })
 		return
 	}
+
+	// Extract ID3 metadata and store
+	const metadata = await metadataManager.processUpload(req.file.filename, req.file.path)
 
 	// Rescan playlist to include new song
 	playlistManager.rescan()
@@ -158,6 +162,13 @@ app.post('/admin/upload', requireAuth, upload.single('song'), (req: Request, res
 		success: true,
 		filename: req.file.filename,
 		size: req.file.size,
+		metadata: {
+			title: metadata.title,
+			artist: metadata.artist,
+			album: metadata.album,
+			durationMs: metadata.durationMs,
+			extractedFromId3: metadata.extractedFromId3,
+		},
 		message: 'Song uploaded successfully',
 	})
 })
@@ -168,27 +179,46 @@ app.post('/admin/upload', requireAuth, upload.single('song'), (req: Request, res
  * Headers: X-API-Key: <your-api-key>
  * Body: multipart/form-data with 'songs[]' field (multiple files)
  */
-app.post('/admin/upload/batch', requireAuth, upload.array('songs', 100), (req: Request, res: Response) => {
-	const files = req.files as Express.Multer.File[]
+app.post(
+	'/admin/upload/batch',
+	requireAuth,
+	upload.array('songs', 100),
+	async (req: Request, res: Response) => {
+		const files = req.files as Express.Multer.File[]
 
-	if (!files || files.length === 0) {
-		res.status(400).json({ error: 'No files uploaded' })
-		return
-	}
+		if (!files || files.length === 0) {
+			res.status(400).json({ error: 'No files uploaded' })
+			return
+		}
 
-	// Rescan playlist to include new songs
-	playlistManager.rescan()
+		// Extract metadata for all uploaded files
+		const results = await Promise.all(
+			files.map(async f => {
+				const metadata = await metadataManager.processUpload(f.filename, f.path)
+				return {
+					filename: f.filename,
+					size: f.size,
+					metadata: {
+						title: metadata.title,
+						artist: metadata.artist,
+						album: metadata.album,
+						extractedFromId3: metadata.extractedFromId3,
+					},
+				}
+			}),
+		)
 
-	res.json({
-		success: true,
-		count: files.length,
-		files: files.map(f => ({
-			filename: f.filename,
-			size: f.size,
-		})),
-		message: `${files.length} song(s) uploaded successfully`,
-	})
-})
+		// Rescan playlist to include new songs
+		playlistManager.rescan()
+
+		res.json({
+			success: true,
+			count: files.length,
+			files: results,
+			message: `${files.length} song(s) uploaded successfully`,
+		})
+	},
+)
 
 /**
  * Delete a song
@@ -197,6 +227,10 @@ app.post('/admin/upload/batch', requireAuth, upload.array('songs', 100), (req: R
  */
 app.delete('/admin/songs/:filename', requireAuth, (req: Request, res: Response) => {
 	const filename = req.params.filename
+	if (!filename) {
+		res.status(400).json({ error: 'Filename required' })
+		return
+	}
 	const filepath = path.join(SONGS_DIR, filename)
 
 	// Security: prevent path traversal
@@ -212,6 +246,7 @@ app.delete('/admin/songs/:filename', requireAuth, (req: Request, res: Response) 
 
 	try {
 		fs.unlinkSync(filepath)
+		metadataManager.delete(filename) // Also remove metadata
 		playlistManager.rescan()
 		res.json({
 			success: true,
@@ -226,12 +261,91 @@ app.delete('/admin/songs/:filename', requireAuth, (req: Request, res: Response) 
 })
 
 /**
+ * Get metadata for a track
+ * GET /admin/tracks/:filename/metadata
+ * Headers: X-API-Key: <your-api-key>
+ */
+app.get('/admin/tracks/:filename/metadata', requireAuth, async (req: Request, res: Response) => {
+	const filename = req.params.filename
+	if (!filename) {
+		res.status(400).json({ error: 'Filename required' })
+		return
+	}
+	const filepath = path.join(SONGS_DIR, filename)
+
+	// Security: prevent path traversal
+	if (!filepath.startsWith(SONGS_DIR)) {
+		res.status(400).json({ error: 'Invalid filename' })
+		return
+	}
+
+	if (!fs.existsSync(filepath)) {
+		res.status(404).json({ error: 'Song not found' })
+		return
+	}
+
+	const metadata = await metadataManager.getOrExtract(filename, filepath)
+	res.json({ filename, metadata })
+})
+
+/**
+ * Update metadata for a track
+ * PATCH /admin/tracks/:filename/metadata
+ * Headers: X-API-Key: <your-api-key>
+ * Body: { title?, artist?, album?, albumArtUrl? }
+ */
+app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: Response) => {
+	const filename = req.params.filename
+	if (!filename) {
+		res.status(400).json({ error: 'Filename required' })
+		return
+	}
+	const filepath = path.join(SONGS_DIR, filename)
+
+	// Security: prevent path traversal
+	if (!filepath.startsWith(SONGS_DIR)) {
+		res.status(400).json({ error: 'Invalid filename' })
+		return
+	}
+
+	if (!fs.existsSync(filepath)) {
+		res.status(404).json({ error: 'Song not found' })
+		return
+	}
+
+	const { title, artist, album, albumArtUrl } = req.body
+	const updates: Record<string, string | undefined> = {}
+
+	if (title !== undefined) updates.title = title
+	if (artist !== undefined) updates.artist = artist
+	if (album !== undefined) updates.album = album
+	if (albumArtUrl !== undefined) updates.albumArtUrl = albumArtUrl
+
+	if (Object.keys(updates).length === 0) {
+		res.status(400).json({ error: 'No updates provided' })
+		return
+	}
+
+	const metadata = metadataManager.update(filename, updates)
+
+	// Rescan to update track info in playlist
+	playlistManager.rescan()
+
+	res.json({
+		success: true,
+		filename,
+		metadata,
+	})
+})
+
+/**
  * List all songs
  * GET /admin/songs
  * Headers: X-API-Key: <your-api-key>
  */
 app.get('/admin/songs', requireAuth, (req: Request, res: Response) => {
-	const files = fs.readdirSync(SONGS_DIR)
+	const files = fs
+		.readdirSync(SONGS_DIR)
 		.filter(f => f.endsWith('.mp3'))
 		.map(f => {
 			const stats = fs.statSync(path.join(SONGS_DIR, f))
