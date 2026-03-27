@@ -399,6 +399,181 @@
       transform: scale(1.1);
     }
 
+    /* Track Management Styles */
+    .admin-tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 15px;
+    }
+
+    .admin-tab {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+
+    .admin-tab.active {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+    }
+
+    .admin-tab:hover:not(.active) {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .track-manager {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .managed-track {
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 8px;
+      margin-bottom: 8px;
+      gap: 10px;
+    }
+
+    .managed-track:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    .managed-track-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .managed-track-title {
+      font-weight: 600;
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .managed-track-artist {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    .managed-track-actions {
+      display: flex;
+      gap: 6px;
+    }
+
+    .track-action-btn {
+      padding: 6px 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .track-action-btn.edit {
+      background: rgba(102, 126, 234, 0.2);
+      color: #667eea;
+    }
+
+    .track-action-btn.delete {
+      background: rgba(255, 107, 107, 0.2);
+      color: #ff6b6b;
+    }
+
+    .track-action-btn:hover {
+      transform: scale(1.05);
+    }
+
+    /* Edit Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.8);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .modal {
+      background: linear-gradient(180deg, #1a1a2e 0%, #16162a 100%);
+      border-radius: 16px;
+      padding: 24px;
+      width: 90%;
+      max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+
+    .modal h3 {
+      margin: 0 0 20px 0;
+      font-size: 18px;
+    }
+
+    .modal-field {
+      margin-bottom: 15px;
+    }
+
+    .modal-field label {
+      display: block;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 6px;
+    }
+
+    .modal-field input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+
+    .modal-field input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .modal-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .modal-actions button {
+      flex: 1;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .modal-actions .cancel {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+
+    .modal-actions .save {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+    }
+
     @media (max-width: 500px) {
       .player-content {
         flex-direction: column;
@@ -457,24 +632,33 @@
       </ul>
     </div>
 
-    <!-- Admin Upload Card -->
+    <!-- Admin Panel -->
     <div class="player-card" id="adminCard" style="display: none;">
       <div class="playlist-header" style="margin-bottom: 15px;">
-        <h2>🔐 Admin Upload</h2>
+        <h2>🔐 Admin Panel</h2>
         <button class="close-btn" id="closeAdmin" style="background: transparent; border: none; color: #fff; font-size: 20px; cursor: pointer;">✕</button>
       </div>
 
-      <div class="upload-section">
-        <div class="auth-section" id="authSection">
-          <p style="color: rgba(255,255,255,0.7); margin-bottom: 10px; font-size: 14px;">Enter API key to upload songs:</p>
-          <div style="display: flex; gap: 10px;">
-            <input type="password" id="apiKeyInput" placeholder="API Key" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-size: 14px;">
-            <button id="authBtn" class="upload-btn">Unlock</button>
-          </div>
-          <div id="authError" style="color: #ff6b6b; margin-top: 10px; font-size: 13px;"></div>
+      <!-- Auth Section -->
+      <div class="auth-section" id="authSection">
+        <p style="color: rgba(255,255,255,0.7); margin-bottom: 10px; font-size: 14px;">Enter API key to manage songs:</p>
+        <div style="display: flex; gap: 10px;">
+          <input type="password" id="apiKeyInput" placeholder="API Key" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(255,255,255,0.1); color: #fff; font-size: 14px;">
+          <button id="authBtn" class="upload-btn">Unlock</button>
+        </div>
+        <div id="authError" style="color: #ff6b6b; margin-top: 10px; font-size: 13px;"></div>
+      </div>
+
+      <!-- Admin Interface (shown after auth) -->
+      <div id="adminInterface" style="display: none;">
+        <!-- Tabs -->
+        <div class="admin-tabs">
+          <button class="admin-tab active" data-tab="upload">📤 Upload</button>
+          <button class="admin-tab" data-tab="manage">📋 Manage</button>
         </div>
 
-        <div class="upload-interface" id="uploadInterface" style="display: none;">
+        <!-- Upload Tab -->
+        <div class="tab-content" id="uploadTab">
           <div class="upload-zone" id="uploadZone">
             <input type="file" id="fileInput" multiple accept=".mp3" style="display: none;">
             <div class="upload-prompt">
@@ -503,6 +687,41 @@
 
           <div id="uploadResult" style="margin-top: 15px; padding: 12px; border-radius: 8px; display: none;"></div>
         </div>
+
+        <!-- Manage Tab -->
+        <div class="tab-content" id="manageTab" style="display: none;">
+          <div class="track-manager" id="trackManager">
+            <p style="color: rgba(255,255,255,0.5); text-align: center;">Loading tracks...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Track Modal -->
+  <div class="modal-overlay" id="editModal" style="display: none;">
+    <div class="modal">
+      <h3>✏️ Edit Track</h3>
+      <input type="hidden" id="editFilename">
+      <div class="modal-field">
+        <label>Title</label>
+        <input type="text" id="editTitle" placeholder="Track title">
+      </div>
+      <div class="modal-field">
+        <label>Artist</label>
+        <input type="text" id="editArtist" placeholder="Artist name">
+      </div>
+      <div class="modal-field">
+        <label>Album</label>
+        <input type="text" id="editAlbum" placeholder="Album name">
+      </div>
+      <div class="modal-field">
+        <label>Album Art URL</label>
+        <input type="text" id="editArtUrl" placeholder="https://example.com/cover.jpg">
+      </div>
+      <div class="modal-actions">
+        <button class="cancel" id="editCancel">Cancel</button>
+        <button class="save" id="editSave">Save</button>
       </div>
     </div>
   </div>
@@ -714,17 +933,18 @@
     }
 
     // ========================================================================
-    // ADMIN UPLOAD FUNCTIONALITY
+    // ADMIN FUNCTIONALITY
     // ========================================================================
 
     let apiKey = localStorage.getItem('radio_api_key') || '';
     let selectedFiles = [];
+    let managedTracks = [];
 
     const adminToggle = document.getElementById('adminToggle');
     const adminCard = document.getElementById('adminCard');
     const closeAdmin = document.getElementById('closeAdmin');
     const authSection = document.getElementById('authSection');
-    const uploadInterface = document.getElementById('uploadInterface');
+    const adminInterface = document.getElementById('adminInterface');
     const apiKeyInput = document.getElementById('apiKeyInput');
     const authBtn = document.getElementById('authBtn');
     const authError = document.getElementById('authError');
@@ -738,6 +958,8 @@
     const progressPercent = document.getElementById('progressPercent');
     const progressBar = document.getElementById('progressBar');
     const uploadResult = document.getElementById('uploadResult');
+    const trackManager = document.getElementById('trackManager');
+    const editModal = document.getElementById('editModal');
 
     // Toggle admin panel
     adminToggle.addEventListener('click', () => {
@@ -745,13 +967,30 @@
       adminToggle.style.display = 'none';
       if (apiKey) {
         authSection.style.display = 'none';
-        uploadInterface.style.display = 'block';
+        adminInterface.style.display = 'block';
+        loadManagedTracks();
       }
     });
 
     closeAdmin.addEventListener('click', () => {
       adminCard.style.display = 'none';
       adminToggle.style.display = 'block';
+    });
+
+    // Tab switching
+    document.querySelectorAll('.admin-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+
+        const tabName = tab.dataset.tab;
+        document.getElementById('uploadTab').style.display = tabName === 'upload' ? 'block' : 'none';
+        document.getElementById('manageTab').style.display = tabName === 'manage' ? 'block' : 'none';
+
+        if (tabName === 'manage') {
+          loadManagedTracks();
+        }
+      });
     });
 
     // Authentication
@@ -775,7 +1014,8 @@
           apiKey = key;
           localStorage.setItem('radio_api_key', key);
           authSection.style.display = 'none';
-          uploadInterface.style.display = 'block';
+          adminInterface.style.display = 'block';
+          loadManagedTracks();
         } else {
           authError.textContent = 'Invalid API key';
           apiKey = '';
@@ -901,6 +1141,129 @@
 
       // Playlist will auto-update via SSE
     });
+
+    // ========================================================================
+    // TRACK MANAGEMENT
+    // ========================================================================
+
+    async function loadManagedTracks() {
+      try {
+        const res = await fetch('/api/tracks');
+        const data = await res.json();
+        managedTracks = data.tracks;
+        renderManagedTracks();
+      } catch (err) {
+        trackManager.innerHTML = '<p style="color: #ff6b6b; text-align: center;">Failed to load tracks</p>';
+      }
+    }
+
+    function renderManagedTracks() {
+      if (managedTracks.length === 0) {
+        trackManager.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No tracks found</p>';
+        return;
+      }
+
+      trackManager.innerHTML = managedTracks.map(track => {
+        const filename = track.path.split('/').pop();
+        return `
+          <div class="managed-track" data-filename="${escapeHtml(filename)}">
+            <div class="managed-track-info">
+              <div class="managed-track-title">${escapeHtml(track.title)}</div>
+              <div class="managed-track-artist">${escapeHtml(track.artist)}</div>
+            </div>
+            <div class="managed-track-actions">
+              <button class="track-action-btn edit" onclick="openEditModal('${escapeHtml(filename)}')">✏️</button>
+              <button class="track-action-btn delete" onclick="deleteTrack('${escapeHtml(filename)}')">🗑️</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Edit Modal
+    async function openEditModal(filename) {
+      try {
+        const res = await fetch(`/admin/tracks/${encodeURIComponent(filename)}/metadata`, {
+          headers: { 'X-API-Key': apiKey }
+        });
+
+        if (!res.ok) throw new Error('Failed to load metadata');
+
+        const data = await res.json();
+        const meta = data.metadata || {};
+
+        document.getElementById('editFilename').value = filename;
+        document.getElementById('editTitle').value = meta.title || '';
+        document.getElementById('editArtist').value = meta.artist || '';
+        document.getElementById('editAlbum').value = meta.album || '';
+        document.getElementById('editArtUrl').value = meta.albumArtUrl || '';
+
+        editModal.style.display = 'flex';
+      } catch (err) {
+        alert('Failed to load track metadata');
+      }
+    }
+
+    window.openEditModal = openEditModal;
+
+    document.getElementById('editCancel').addEventListener('click', () => {
+      editModal.style.display = 'none';
+    });
+
+    document.getElementById('editSave').addEventListener('click', async () => {
+      const filename = document.getElementById('editFilename').value;
+      const updates = {
+        title: document.getElementById('editTitle').value,
+        artist: document.getElementById('editArtist').value,
+        album: document.getElementById('editAlbum').value,
+        albumArtUrl: document.getElementById('editArtUrl').value || undefined
+      };
+
+      try {
+        const res = await fetch(`/admin/tracks/${encodeURIComponent(filename)}/metadata`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': apiKey
+          },
+          body: JSON.stringify(updates)
+        });
+
+        if (!res.ok) throw new Error('Failed to save');
+
+        editModal.style.display = 'none';
+        loadManagedTracks();
+      } catch (err) {
+        alert('Failed to save changes');
+      }
+    });
+
+    // Close modal on overlay click
+    editModal.addEventListener('click', (e) => {
+      if (e.target === editModal) {
+        editModal.style.display = 'none';
+      }
+    });
+
+    // Delete Track
+    async function deleteTrack(filename) {
+      if (!confirm(`Delete "${filename}"? This cannot be undone.`)) return;
+
+      try {
+        const res = await fetch(`/admin/songs/${encodeURIComponent(filename)}`, {
+          method: 'DELETE',
+          headers: { 'X-API-Key': apiKey }
+        });
+
+        if (!res.ok) throw new Error('Failed to delete');
+
+        loadManagedTracks();
+      } catch (err) {
+        alert('Failed to delete track');
+      }
+    }
+
+    window.deleteTrack = deleteTrack;
 
     init();
   </script>
