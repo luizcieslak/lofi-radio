@@ -53,6 +53,9 @@ class PlaylistManager {
 				album: meta?.album || undefined,
 				albumArtUrl: meta?.albumArtUrl || undefined,
 				durationMs: meta?.durationMs || undefined,
+				spotifyUrl: meta?.spotifyUrl || undefined,
+				youtubeUrl: meta?.youtubeUrl || undefined,
+				appleMusicUrl: meta?.appleMusicUrl || undefined,
 			}
 		})
 
@@ -262,6 +265,9 @@ class PlaylistManager {
 				album: meta?.album || undefined,
 				albumArtUrl: meta?.albumArtUrl || undefined,
 				durationMs: meta?.durationMs || undefined,
+				spotifyUrl: meta?.spotifyUrl || undefined,
+				youtubeUrl: meta?.youtubeUrl || undefined,
+				appleMusicUrl: meta?.appleMusicUrl || undefined,
 			}
 		})
 

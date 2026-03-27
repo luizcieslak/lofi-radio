@@ -13,6 +13,10 @@ export interface Track {
 	album?: string
 	albumArtUrl?: string
 	durationMs?: number
+	// Platform links
+	spotifyUrl?: string
+	youtubeUrl?: string
+	appleMusicUrl?: string
 }
 
 export interface NowPlaying {

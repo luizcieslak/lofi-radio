@@ -22,6 +22,10 @@ export interface TrackMetadata {
 	album?: string
 	albumArtUrl?: string
 	durationMs?: number
+	// Platform links
+	spotifyUrl?: string
+	youtubeUrl?: string
+	appleMusicUrl?: string
 	// Source tracking
 	extractedFromId3: boolean
 	manuallyEdited: boolean
