@@ -157,11 +157,14 @@ Modern, responsive web UI featuring:
 - Real-time playlist with visual indicator
 - SSE-driven updates
 - Mobile responsive design
+- **Media Session API** - Track info shows on Bluetooth devices, car head units, lock screens
+- **Auto-reconnect** - Robust reconnection on stream drops (deploys, network issues)
 
 **Admin Panel** (click 🔐 button):
 - API key authentication (stored in localStorage)
 - Upload tab: Drag-and-drop MP3 upload with progress
-- Manage tab: Edit/delete tracks, update metadata
+- Manage tab: Edit/delete tracks, update metadata, platform URLs (Spotify/YouTube/Apple Music)
+- Link progress indicator showing completion status per track
 
 ---
 
@@ -300,6 +303,9 @@ lofi-radio/
 - Graceful shutdown
 - CORS support
 - **Radio-style live broadcasts** - listeners join mid-song
+- **Media Session API** - Track metadata on Bluetooth/lock screens (via AVRCP)
+- **Auto-reconnect** - Handles stream interruptions without manual refresh
+- **Platform URL editing** - Admin UI for Spotify/YouTube/Apple Music links
 
 ### 🎯 Design Philosophy
 
@@ -492,6 +498,55 @@ docker logs -f lofi-radio
 
 - Returns: SSE stream for playlist updates
 - Events: `playlist`, `trackChange`
+
+---
+
+## Media Session API Integration
+
+The player uses the browser's Media Session API to expose track metadata to the operating system, which then forwards it to connected devices via Bluetooth AVRCP.
+
+**How it works:**
+```
+Web Player → Media Session API → Browser → OS Media Controls → Bluetooth AVRCP → Car/Headphones
+```
+
+**Implementation:**
+```javascript
+if ('mediaSession' in navigator) {
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title,
+    artist: track.artist,
+    album: track.album || 'Lofi Radio',
+    artwork: [{ src: track.albumArtUrl, sizes: '512x512', type: 'image/jpeg' }]
+  });
+  navigator.mediaSession.setActionHandler('play', play);
+  navigator.mediaSession.setActionHandler('pause', pause);
+}
+```
+
+**Supported displays:**
+- Car head units (via Bluetooth)
+- Phone lock screens
+- Bluetooth headphones with display
+- OS media controls (macOS Now Playing, Windows SMTC)
+
+---
+
+## Auto-Reconnect System
+
+The player automatically reconnects when the stream is interrupted (server restart, network issues, deploys).
+
+**Detection events:**
+- `error` - Stream error
+- `stalled` - Buffer stalled for too long
+- `pause` - Unexpected pause (stream dropped silently)
+- `ended` - Stream ended
+
+**Reconnection strategy:**
+- Exponential backoff: 1s → 1.5s → 2.25s → ... (max 30s)
+- Shows "Reconnecting (N)..." status
+- Resets counter on successful reconnection
+- User doesn't need to refresh or interact
 
 ---
 
