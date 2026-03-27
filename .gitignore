@@ -36,8 +36,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Generated playlist (user-specific)
 src/playlist.ts
 
-# Songs directory (user-specific)
+# Songs directory (user-specific, includes .radio-state/ for persistence)
 songs/
 
-# Runtime state (user-specific)
-src/state/state.json
+# Legacy state location (now in songs/.radio-state/)
+src/state/
