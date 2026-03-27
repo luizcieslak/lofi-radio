@@ -822,6 +822,13 @@
       }
     });
 
+    // Media Session API - handle car/lock screen controls
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.setActionHandler('play', play);
+      navigator.mediaSession.setActionHandler('pause', pause);
+      // Note: skip/previous not supported for live radio streams
+    }
+
     // Track Info
     function updateTrackInfo(track) {
       if (!track) {
@@ -834,6 +841,18 @@
       albumArtEl.innerHTML = track.albumArtUrl
         ? `<img src="${track.albumArtUrl}" alt="Album Art">`
         : '🎵';
+
+      // Media Session API - sends metadata to OS/Bluetooth/lock screen
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: track.title || 'Unknown Title',
+          artist: track.artist || 'Unknown Artist',
+          album: track.album || 'Lofi Radio',
+          artwork: track.albumArtUrl ? [
+            { src: track.albumArtUrl, sizes: '512x512', type: 'image/jpeg' }
+          ] : []
+        });
+      }
     }
 
     // Playlist Rendering
