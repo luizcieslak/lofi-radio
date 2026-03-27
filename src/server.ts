@@ -292,7 +292,7 @@ app.get('/admin/tracks/:filename/metadata', requireAuth, async (req: Request, re
  * Update metadata for a track
  * PATCH /admin/tracks/:filename/metadata
  * Headers: X-API-Key: <your-api-key>
- * Body: { title?, artist?, album?, albumArtUrl? }
+ * Body: { title?, artist?, album?, albumArtUrl?, spotifyUrl?, youtubeUrl?, appleMusicUrl? }
  */
 app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: Response) => {
 	const filename = req.params.filename
@@ -313,13 +313,16 @@ app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: R
 		return
 	}
 
-	const { title, artist, album, albumArtUrl } = req.body
+	const { title, artist, album, albumArtUrl, spotifyUrl, youtubeUrl, appleMusicUrl } = req.body
 	const updates: Record<string, string | undefined> = {}
 
 	if (title !== undefined) updates.title = title
 	if (artist !== undefined) updates.artist = artist
 	if (album !== undefined) updates.album = album
 	if (albumArtUrl !== undefined) updates.albumArtUrl = albumArtUrl
+	if (spotifyUrl !== undefined) updates.spotifyUrl = spotifyUrl
+	if (youtubeUrl !== undefined) updates.youtubeUrl = youtubeUrl
+	if (appleMusicUrl !== undefined) updates.appleMusicUrl = appleMusicUrl
 
 	if (Object.keys(updates).length === 0) {
 		res.status(400).json({ error: 'No updates provided' })

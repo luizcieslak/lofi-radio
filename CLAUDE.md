@@ -93,6 +93,38 @@ Manages track metadata with ID3 extraction and manual override support:
 - `update(filename, updates)` - Manual metadata update
 - `delete(filename)` - Remove metadata when track deleted
 
+### Track Metadata Schema
+
+Each track can have the following metadata:
+
+```typescript
+interface TrackMetadata {
+  // Core metadata (from ID3 or manual)
+  title: string;
+  artist: string;
+  album?: string;
+  duration: number; // in seconds
+  
+  // Album artwork
+  coverUrl?: string; // Public URL to album cover image
+  
+  // Platform links (external streaming services)
+  spotifyUrl?: string;    // https://open.spotify.com/track/...
+  youtubeUrl?: string;    // https://www.youtube.com/watch?v=...
+  appleMusicUrl?: string; // https://music.apple.com/...
+}
+```
+
+**Platform Links:**
+Tracks can include links to external streaming platforms, enabling features like:
+- "Listen on Spotify" buttons in the UI
+- YouTube video embeds
+- Apple Music integration
+- Cross-platform track discovery
+
+**Album Covers:**
+Cover artwork is served via CDN URLs for optimal performance. The frontend can display album art using the `coverUrl` field.
+
 #### 6. **Express Server** ([src/server.ts](src/server.ts))
 
 REST API and web server with endpoints:
@@ -328,11 +360,14 @@ There are **TWO implementations** in this repository:
 - ✅ ~~Extract or sync music metadata (ID3 tags)~~ - Implemented via `music-metadata` library
 - ✅ ~~Streamline playlist management~~ - Add, edit, delete tracks via admin API & UI
 - ✅ ~~Authentication & Authorization~~ - API key auth for admin routes
+- ✅ ~~Album artwork~~ - Tracks have `coverUrl` pointing to CDN-hosted images
+- ✅ ~~Platform links~~ - Spotify, YouTube, Apple Music URLs available per track
 - **Frame-precise persistence** - Resume mid-song (currently resumes at track start)
 - Enhanced Web UI - Queue management, drag-and-drop reordering
 - Volume Normalization - Analyze tracks and normalize loudness
 - Statistics & Analytics - Track listen counts, peak listener count, most played tracks, listener duration
-- Album art from URL - Currently stores `albumArtUrl` but UI doesn't display it yet
+- **UI: Platform link buttons** - Display "Listen on Spotify/YouTube/Apple Music" in player
+- **UI: Album art display** - Show cover artwork in now-playing and playlist views
 
 ---
 
@@ -404,14 +439,18 @@ docker logs -f lofi-radio
 - Example:
   ```json
   {
-  	"track": {
-  		"id": "1",
-  		"title": "Track Name",
-  		"artist": "Artist Name",
-  		"album": "Album Name",
-  		"path": "./songs/track1.mp3"
-  	},
-  	"startedAt": 1708459200000
+    "track": {
+      "id": "1",
+      "title": "Track Name",
+      "artist": "Artist Name",
+      "album": "Album Name",
+      "path": "./songs/track1.mp3",
+      "coverUrl": "https://cdn.example.com/covers/track-name.jpg",
+      "spotifyUrl": "https://open.spotify.com/track/abc123",
+      "youtubeUrl": "https://www.youtube.com/watch?v=xyz789",
+      "appleMusicUrl": "https://music.apple.com/us/song/track-name/123456"
+    },
+    "startedAt": 1708459200000
   }
   ```
 
