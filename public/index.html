@@ -810,16 +810,49 @@
       statusEl.className = 'status';
     });
 
-    audio.addEventListener('playing', () => {
-      statusEl.textContent = 'LIVE';
-      statusEl.className = 'status live';
-    });
+    // Robust reconnection logic
+    let reconnectAttempts = 0;
+    const maxReconnectDelay = 30000; // max 30s between attempts
+
+    function reconnect() {
+      if (!isPlaying) return;
+      
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), maxReconnectDelay);
+      
+      statusEl.textContent = `Reconnecting (${reconnectAttempts})...`;
+      statusEl.className = 'status';
+      errorEl.textContent = `Stream interrupted. Retrying in ${Math.round(delay/1000)}s...`;
+      
+      setTimeout(() => {
+        if (!isPlaying) return;
+        console.log(`[Reconnect] Attempt ${reconnectAttempts}`);
+        audio.src = `/stream?${Date.now()}`;
+        audio.play().catch(() => reconnect());
+      }, delay);
+    }
 
     audio.addEventListener('error', () => {
-      errorEl.textContent = 'Stream error. Reconnecting...';
-      if (isPlaying) {
-        setTimeout(play, 3000);
-      }
+      console.log('[Audio] Error event');
+      reconnect();
+    });
+
+    audio.addEventListener('stalled', () => {
+      console.log('[Audio] Stalled event');
+      // Only reconnect if stalled for too long
+      setTimeout(() => {
+        if (audio.readyState < 3 && isPlaying) {
+          reconnect();
+        }
+      }, 5000);
+    });
+
+    // Reset reconnect counter on successful play
+    audio.addEventListener('playing', () => {
+      reconnectAttempts = 0;
+      statusEl.textContent = 'LIVE';
+      statusEl.className = 'status live';
+      errorEl.textContent = '';
     });
 
     // Media Session API - handle car/lock screen controls
