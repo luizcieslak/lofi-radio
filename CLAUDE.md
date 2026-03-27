@@ -76,10 +76,28 @@ Manages the track queue with persistence:
 - `saveState()` - Saves current playlist order and track position to JSON
 - `reconcilePlaylist(state)` - Merges saved playlist with current disk contents
 
-#### 5. **Express Server** ([src/server.ts](src/server.ts))
+#### 5. **MetadataManager** ([src/metadataManager.ts](src/metadataManager.ts))
+
+Manages track metadata with ID3 extraction and manual override support:
+
+- Extracts ID3 tags from uploaded MP3s (title, artist, album, duration)
+- Stores metadata in `src/state/tracks-meta.json`
+- Supports manual override of extracted metadata
+- Priority: manual edit > stored metadata > ID3 tags > filename fallback
+
+**Key Methods:**
+
+- `processUpload(filename, filepath)` - Extract ID3 and store metadata on upload
+- `getOrExtract(filename, filepath)` - Get stored or extract from file
+- `get(filename)` - Sync access to cached metadata
+- `update(filename, updates)` - Manual metadata update
+- `delete(filename)` - Remove metadata when track deleted
+
+#### 6. **Express Server** ([src/server.ts](src/server.ts))
 
 REST API and web server with endpoints:
 
+**Public:**
 - `GET /stream` - Audio stream endpoint
 - `GET /now-playing` - Current track info (JSON)
 - `GET /now-playing/events` - SSE metadata updates
@@ -88,7 +106,16 @@ REST API and web server with endpoints:
 - `GET /api/playlist/events` - Playlist SSE updates
 - `GET /` - Web player UI
 
-#### 6. **Web Player** ([public/index.html](public/index.html))
+**Admin (requires `X-API-Key` header):**
+- `POST /admin/upload` - Upload single MP3
+- `POST /admin/upload/batch` - Upload multiple MP3s
+- `GET /admin/songs` - List all songs
+- `DELETE /admin/songs/:filename` - Delete a song
+- `GET /admin/tracks/:filename/metadata` - Get track metadata
+- `PATCH /admin/tracks/:filename/metadata` - Update track metadata
+- `POST /admin/rescan` - Rescan songs directory
+
+#### 7. **Web Player** ([public/index.html](public/index.html))
 
 Modern, responsive web UI featuring:
 
@@ -98,6 +125,11 @@ Modern, responsive web UI featuring:
 - Real-time playlist with visual indicator
 - SSE-driven updates
 - Mobile responsive design
+
+**Admin Panel** (click 🔐 button):
+- API key authentication (stored in localStorage)
+- Upload tab: Drag-and-drop MP3 upload with progress
+- Manage tab: Edit/delete tracks, update metadata
 
 ---
 
@@ -110,9 +142,11 @@ lofi-radio/
 │   ├── streamEngine.ts     # Core streaming engine
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
 │   ├── playlistManager.ts  # Playlist management with persistence
+│   ├── metadataManager.ts  # Track metadata storage & ID3 extraction
 │   ├── types.ts            # TypeScript interfaces
 │   └── state/
-│       └── state.json      # Persisted playlist state (gitignored)
+│       ├── state.json      # Persisted playlist state (gitignored)
+│       └── tracks-meta.json # Track metadata (gitignored)
 ├── public/
 │   └── index.html          # Web player UI
 ├── songs/                  # MP3 files directory (auto-scanned)
@@ -289,13 +323,14 @@ There are **TWO implementations** in this repository:
 
 ## Next Steps / Improvement Roadmap
 
-- Extract or sync music metadata (ID3 tags)
-- Streamline playlist management - Add, remove and reorder tracks via API
-- Authentication & Authorization
+- ✅ ~~Extract or sync music metadata (ID3 tags)~~ - Implemented via `music-metadata` library
+- ✅ ~~Streamline playlist management~~ - Add, edit, delete tracks via admin API & UI
+- ✅ ~~Authentication & Authorization~~ - API key auth for admin routes
 - **Frame-precise persistence** - Resume mid-song (currently resumes at track start)
 - Enhanced Web UI - Queue management, drag-and-drop reordering
 - Volume Normalization - Analyze tracks and normalize loudness
 - Statistics & Analytics - Track listen counts, peak listener count, most played tracks, listener duration
+- Album art from URL - Currently stores `albumArtUrl` but UI doesn't display it yet
 
 ---
 
@@ -345,6 +380,7 @@ docker logs -f lofi-radio
 ### Environment Variables
 
 - `PORT` - Server port (default: 5634)
+- `RADIO_API_KEY` - API key for admin endpoints (required for upload/edit/delete)
 
 ---
 
