@@ -14,7 +14,9 @@ import { metadataManager } from './metadataManager'
 import type { PlaylistState, Track } from './types'
 
 const SONGS_DIR = path.join(__dirname, '../songs')
-const STATE_FILE = path.join(__dirname, 'state/state.json')
+// Store state inside songs folder so it persists with the volume on Railway
+const STATE_DIR = path.join(SONGS_DIR, '.radio-state')
+const STATE_FILE = path.join(STATE_DIR, 'state.json')
 
 class PlaylistManager {
 	private tracks: Track[] = []

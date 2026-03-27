@@ -11,7 +11,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as mm from 'music-metadata'
 
-const STATE_DIR = path.join(__dirname, 'state')
+// Store state inside songs folder so it persists with the volume on Railway
+const SONGS_DIR = path.join(__dirname, '../songs')
+const STATE_DIR = path.join(SONGS_DIR, '.radio-state')
 const METADATA_FILE = path.join(STATE_DIR, 'tracks-meta.json')
 
 export interface TrackMetadata {

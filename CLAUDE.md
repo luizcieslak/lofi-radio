@@ -143,10 +143,12 @@ lofi-radio/
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
 │   ├── playlistManager.ts  # Playlist management with persistence
 │   ├── metadataManager.ts  # Track metadata storage & ID3 extraction
-│   ├── types.ts            # TypeScript interfaces
-│   └── state/
-│       ├── state.json      # Persisted playlist state (gitignored)
-│       └── tracks-meta.json # Track metadata (gitignored)
+│   └── types.ts            # TypeScript interfaces
+├── songs/
+│   ├── *.mp3               # Music files
+│   └── .radio-state/       # Persisted state (inside volume for Railway)
+│       ├── state.json      # Playlist order & position
+│       └── tracks-meta.json # Track metadata
 ├── public/
 │   └── index.html          # Web player UI
 ├── songs/                  # MP3 files directory (auto-scanned)
@@ -217,7 +219,7 @@ lofi-radio/
 
 **Solution:** Automatic state persistence with smart reconciliation
 
-**State File Location:** `src/state/state.json` (gitignored)
+**State File Location:** `songs/.radio-state/` (inside songs volume for Railway persistence)
 
 **State Structure:**
 
