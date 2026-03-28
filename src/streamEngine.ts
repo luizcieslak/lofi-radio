@@ -3,16 +3,23 @@ import type { Response } from 'express'
 import { Mp3FrameReader, PreciseTimer } from './mp3parser'
 import type { NowPlaying, Track } from './types'
 
+interface StreamSession {
+	res: Response
+	connectedAt: number
+}
+
 class StreamEngine {
 	private clients: Set<Response> = new Set()
+	private sessions: Map<string, StreamSession> = new Map() // sessionId -> session
 	private sseClients: Set<Response> = new Set()
 	private isRunning: boolean = false
 	private nowPlaying: NowPlaying | null = null
 
 	/**
 	 * Add a new audio stream listener
+	 * @param sessionId - Unique session ID from client (for deduplication)
 	 */
-	addClient(res: Response): void {
+	addClient(res: Response, sessionId?: string): void {
 		// Set headers for streaming audio
 		res.setHeader('Content-Type', 'audio/mpeg')
 		res.setHeader('Cache-Control', 'no-cache, no-store')
@@ -23,17 +30,46 @@ class StreamEngine {
 		res.setHeader('X-Accel-Buffering', 'no')
 
 		this.clients.add(res)
-		console.log(`[Stream] Client connected. Total: ${this.clients.size}`)
+
+		// Track by session ID if provided (for accurate listener count)
+		if (sessionId) {
+			const existing = this.sessions.get(sessionId)
+			if (existing) {
+				// Same session reconnecting - close old connection
+				try {
+					existing.res.end()
+				} catch (e) {
+					// Ignore errors closing old connection
+				}
+				this.clients.delete(existing.res)
+			}
+			this.sessions.set(sessionId, { res, connectedAt: Date.now() })
+			console.log(`[Stream] Session ${sessionId.slice(0, 8)}... connected. Unique listeners: ${this.sessions.size}`)
+		} else {
+			console.log(`[Stream] Anonymous client connected. Total connections: ${this.clients.size}`)
+		}
 
 		// Remove client when they disconnect
 		res.on('close', () => {
 			this.clients.delete(res)
-			console.log(`[Stream] Client disconnected. Total: ${this.clients.size}`)
+			if (sessionId) {
+				const session = this.sessions.get(sessionId)
+				if (session?.res === res) {
+					this.sessions.delete(sessionId)
+					console.log(`[Stream] Session ${sessionId.slice(0, 8)}... disconnected. Unique listeners: ${this.sessions.size}`)
+				}
+			}
 		})
 
 		res.on('error', err => {
 			console.error('[Stream] Client error:', err.message)
 			this.clients.delete(res)
+			if (sessionId) {
+				const session = this.sessions.get(sessionId)
+				if (session?.res === res) {
+					this.sessions.delete(sessionId)
+				}
+			}
 		})
 	}
 
@@ -197,7 +233,8 @@ class StreamEngine {
 	getStatus() {
 		return {
 			isRunning: this.isRunning,
-			listenerCount: this.clients.size,
+			// Use unique session count if available, fallback to raw client count
+			listenerCount: this.sessions.size > 0 ? this.sessions.size : this.clients.size,
 			sseClientCount: this.sseClients.size,
 			nowPlaying: this.nowPlaying,
 		}

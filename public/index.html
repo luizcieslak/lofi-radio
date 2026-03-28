@@ -779,9 +779,20 @@
     let tracks = [];
     let currentIndex = 0;
 
+    // Generate or retrieve persistent session ID for listener tracking
+    function getSessionId() {
+      let sid = localStorage.getItem('radio_session_id');
+      if (!sid) {
+        sid = crypto.randomUUID();
+        localStorage.setItem('radio_session_id', sid);
+      }
+      return sid;
+    }
+    const sessionId = getSessionId();
+
     // Audio Controls
     function play() {
-      audio.src = `/stream?${Date.now()}`;
+      audio.src = `/stream?sid=${sessionId}&t=${Date.now()}`;
       audio.play()
         .then(() => {
           isPlaying = true;

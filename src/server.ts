@@ -109,7 +109,9 @@ const requireAuth = (req: Request, res: Response, next: NextFunction) => {
  * Connect with: <audio src="http://localhost:3000/stream">
  */
 app.get('/stream', (req: Request, res: Response) => {
-	engine.addClient(res)
+	// Session ID for unique listener tracking (sent by client)
+	const sessionId = req.query.sid as string | undefined
+	engine.addClient(res, sessionId)
 	// Note: we don't call res.end() - the response stays open
 })
 
