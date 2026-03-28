@@ -779,12 +779,12 @@
     let tracks = [];
     let currentIndex = 0;
 
-    // Generate or retrieve persistent session ID for listener tracking
+    // Generate session ID for listener tracking (per-tab, clears on close)
     function getSessionId() {
-      let sid = localStorage.getItem('radio_session_id');
+      let sid = sessionStorage.getItem('radio_session_id');
       if (!sid) {
         sid = crypto.randomUUID();
-        localStorage.setItem('radio_session_id', sid);
+        sessionStorage.setItem('radio_session_id', sid);
       }
       return sid;
     }
