@@ -733,7 +733,10 @@
       </div>
       <div class="modal-field">
         <label>Album Art URL</label>
-        <input type="text" id="editArtUrl" placeholder="https://example.com/cover.jpg">
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="editArtUrl" placeholder="https://example.com/cover.jpg" style="flex: 1;">
+          <button type="button" id="clearArtBtn" style="padding: 10px 12px; border: 1px solid rgba(255,107,107,0.5); border-radius: 8px; background: rgba(255,107,107,0.1); color: #ff6b6b; cursor: pointer; font-size: 12px;" title="Clear album art">✕</button>
+        </div>
       </div>
       <div class="modal-field">
         <label>Spotify URL</label>
@@ -1339,13 +1342,19 @@
       editModal.style.display = 'none';
     });
 
+    document.getElementById('clearArtBtn').addEventListener('click', () => {
+      document.getElementById('editArtUrl').value = '';
+    });
+
     document.getElementById('editSave').addEventListener('click', async () => {
       const filename = document.getElementById('editFilename').value;
+      const artUrlValue = document.getElementById('editArtUrl').value;
       const updates = {
         title: document.getElementById('editTitle').value,
         artist: document.getElementById('editArtist').value,
         album: document.getElementById('editAlbum').value,
-        albumArtUrl: document.getElementById('editArtUrl').value || undefined,
+        // Allow clearing albumArtUrl by sending empty string or null
+        albumArtUrl: artUrlValue === '' ? null : (artUrlValue || undefined),
         spotifyUrl: document.getElementById('editSpotifyUrl').value || undefined,
         youtubeUrl: document.getElementById('editYoutubeUrl').value || undefined,
         appleMusicUrl: document.getElementById('editAppleUrl').value || undefined
