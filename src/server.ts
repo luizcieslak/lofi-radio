@@ -21,6 +21,11 @@ import { StreamEngine } from './streamEngine'
 const app = express()
 const engine = new StreamEngine()
 
+// Connect the skip callback so deleted tracks can trigger skip
+playlistManager.setSkipCallback(() => {
+	engine.skipCurrentTrack()
+})
+
 // ============================================================================
 // FILE UPLOAD CONFIGURATION
 // ============================================================================
@@ -157,8 +162,8 @@ app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Reques
 	// Extract ID3 metadata and store
 	const metadata = await metadataManager.processUpload(req.file.filename, req.file.path)
 
-	// Rescan playlist to include new song
-	playlistManager.rescan()
+	// Add track to playlist dynamically (no full rescan needed)
+	playlistManager.addTrack(req.file.filename)
 
 	res.json({
 		success: true,
@@ -210,8 +215,10 @@ app.post(
 			}),
 		)
 
-		// Rescan playlist to include new songs
-		playlistManager.rescan()
+		// Add each track to playlist dynamically
+		for (const file of files) {
+			playlistManager.addTrack(file.filename)
+		}
 
 		res.json({
 			success: true,
@@ -247,9 +254,13 @@ app.delete('/admin/songs/:filename', requireAuth, (req: Request, res: Response) 
 	}
 
 	try {
+		// Remove from playlist first (this may trigger skip if currently playing)
+		playlistManager.removeTrack(filename)
+
+		// Then delete the file and metadata
 		fs.unlinkSync(filepath)
-		metadataManager.delete(filename) // Also remove metadata
-		playlistManager.rescan()
+		metadataManager.delete(filename)
+
 		res.json({
 			success: true,
 			message: `Deleted ${filename}`,

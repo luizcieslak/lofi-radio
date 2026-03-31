@@ -13,6 +13,7 @@ class StreamEngine {
 	private sessions: Map<string, StreamSession> = new Map() // sessionId -> session
 	private sseClients: Set<Response> = new Set()
 	private isRunning: boolean = false
+	private skipRequested: boolean = false
 	private nowPlaying: NowPlaying | null = null
 
 	/**
@@ -44,7 +45,9 @@ class StreamEngine {
 				this.clients.delete(existing.res)
 			}
 			this.sessions.set(sessionId, { res, connectedAt: Date.now() })
-			console.log(`[Stream] Session ${sessionId.slice(0, 8)}... connected. Unique listeners: ${this.sessions.size}`)
+			console.log(
+				`[Stream] Session ${sessionId.slice(0, 8)}... connected. Unique listeners: ${this.sessions.size}`,
+			)
 		} else {
 			console.log(`[Stream] Anonymous client connected. Total connections: ${this.clients.size}`)
 		}
@@ -56,7 +59,9 @@ class StreamEngine {
 				const session = this.sessions.get(sessionId)
 				if (session?.res === res) {
 					this.sessions.delete(sessionId)
-					console.log(`[Stream] Session ${sessionId.slice(0, 8)}... disconnected. Unique listeners: ${this.sessions.size}`)
+					console.log(
+						`[Stream] Session ${sessionId.slice(0, 8)}... disconnected. Unique listeners: ${this.sessions.size}`,
+					)
 				}
 			}
 		})
@@ -146,9 +151,13 @@ class StreamEngine {
 
 	/**
 	 * Stream a single track to all listeners
+	 * Returns true if track completed normally, false if skipped
 	 */
-	private async streamTrack(track: Track): Promise<void> {
+	private async streamTrack(track: Track): Promise<boolean> {
 		console.log(`[Engine] Now playing: ${track.artist} - ${track.title}`)
+
+		// Reset skip flag at start of track
+		this.skipRequested = false
 
 		// Update now playing and notify SSE clients
 		this.nowPlaying = {
@@ -161,9 +170,10 @@ class StreamEngine {
 		const timer = new PreciseTimer()
 
 		let frameCount = 0
+		let wasSkipped = false
 		let frame = reader.readNextFrame()
 
-		while (frame && this.isRunning) {
+		while (frame && this.isRunning && !this.skipRequested) {
 			// Send frame to all clients
 			this.broadcast(frame.data)
 
@@ -185,8 +195,20 @@ class StreamEngine {
 			}
 		}
 
+		// Check if we exited due to skip request
+		if (this.skipRequested) {
+			wasSkipped = true
+			this.skipRequested = false
+			console.log(`[Engine] Skipped: ${track.title} (at frame ${frameCount})`)
+		}
+
 		reader.close()
-		console.log(`[Engine] Finished: ${track.title} (${frameCount} frames)`)
+
+		if (!wasSkipped) {
+			console.log(`[Engine] Finished: ${track.title} (${frameCount} frames)`)
+		}
+
+		return !wasSkipped
 	}
 
 	/**
@@ -224,6 +246,15 @@ class StreamEngine {
 	stop(): void {
 		this.isRunning = false
 		console.log('[Engine] Stopped')
+	}
+
+	/**
+	 * Skip the currently playing track
+	 * Called when the current track is deleted from the playlist
+	 */
+	skipCurrentTrack(): void {
+		console.log('[Engine] Skip requested for current track')
+		this.skipRequested = true
 	}
 
 	getNowPlaying(): NowPlaying | null {

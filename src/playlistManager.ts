@@ -5,6 +5,7 @@
  * - Dynamic loading from songs folder
  * - Current track index tracking
  * - SSE notifications for track changes
+ * - Reactive add/remove without interrupting playback
  */
 
 import * as fs from 'node:fs'
@@ -18,15 +19,27 @@ const SONGS_DIR = path.join(__dirname, '../songs')
 const STATE_DIR = path.join(SONGS_DIR, '.radio-state')
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 
+// Callback type for when current track needs to be skipped
+type SkipCallback = () => void
+
 class PlaylistManager {
 	private tracks: Track[] = []
 	private nextIndex: number = 0
 	private playingIndex: number = 0
 	private sseClients: Set<Response> = new Set()
+	private onSkipCurrentTrack: SkipCallback | null = null
 
 	constructor() {
 		this.loadTracksFromDisk()
 		this.loadState()
+	}
+
+	/**
+	 * Register a callback to be called when the current track needs to be skipped
+	 * (e.g., when it's deleted while playing)
+	 */
+	setSkipCallback(callback: SkipCallback): void {
+		this.onSkipCurrentTrack = callback
 	}
 
 	private loadTracksFromDisk(): void {
@@ -72,13 +85,119 @@ class PlaylistManager {
 
 	/**
 	 * Rescan songs directory and reload tracks
-	 * Useful after uploading/deleting songs
+	 * Useful for manual full refresh
 	 */
 	rescan(): void {
 		console.log('[PlaylistManager] Rescanning songs directory...')
 		this.loadTracksFromDisk()
+		this.broadcastPlaylistUpdate()
+		console.log(`[PlaylistManager] Rescan complete: ${this.tracks.length} tracks`)
+	}
 
-		// Notify all SSE clients of playlist update
+	/**
+	 * Add a single track to the playlist without interrupting playback
+	 * Called when a new song is uploaded
+	 */
+	addTrack(filename: string): void {
+		// Check if track already exists
+		const existingIndex = this.tracks.findIndex(t => path.basename(t.path) === filename)
+		if (existingIndex !== -1) {
+			console.log(`[PlaylistManager] Track already exists: ${filename}`)
+			return
+		}
+
+		// Get metadata
+		const meta = metadataManager.get(filename)
+		const fallbackTitle = filename.replace(/\.mp3$/i, '').replace(/[-_]/g, ' ')
+
+		// Create new track with next available ID
+		const maxId = this.tracks.reduce((max, t) => Math.max(max, parseInt(t.id, 10) || 0), 0)
+		const newTrack: Track = {
+			id: String(maxId + 1),
+			path: `./songs/${filename}`,
+			title: meta?.title || fallbackTitle,
+			artist: meta?.artist || 'Unknown Artist',
+			album: meta?.album || undefined,
+			albumArtUrl: meta?.albumArtUrl || undefined,
+			durationMs: meta?.durationMs || undefined,
+			spotifyUrl: meta?.spotifyUrl || undefined,
+			youtubeUrl: meta?.youtubeUrl || undefined,
+			appleMusicUrl: meta?.appleMusicUrl || undefined,
+		}
+
+		// Add to end of playlist
+		this.tracks.push(newTrack)
+		console.log(`[PlaylistManager] Added track: ${filename} (total: ${this.tracks.length})`)
+
+		// Save state and notify clients
+		this.saveState()
+		this.broadcastPlaylistUpdate()
+	}
+
+	/**
+	 * Remove a track from the playlist without interrupting playback
+	 * If the currently playing track is removed, triggers skip to next track
+	 * Called when a song is deleted
+	 */
+	removeTrack(filename: string): void {
+		const trackIndex = this.tracks.findIndex(t => path.basename(t.path) === filename)
+
+		if (trackIndex === -1) {
+			console.log(`[PlaylistManager] Track not found: ${filename}`)
+			return
+		}
+
+		const isCurrentlyPlaying = trackIndex === this.playingIndex
+		const wasBeforeCurrent = trackIndex < this.playingIndex
+
+		// Remove the track
+		this.tracks.splice(trackIndex, 1)
+		console.log(`[PlaylistManager] Removed track: ${filename} (remaining: ${this.tracks.length})`)
+
+		// Adjust indices
+		if (wasBeforeCurrent) {
+			// Track removed before current: shift indices back
+			this.playingIndex = Math.max(0, this.playingIndex - 1)
+			this.nextIndex = Math.max(0, this.nextIndex - 1)
+		} else if (isCurrentlyPlaying) {
+			// Currently playing track was removed
+			// Keep playingIndex the same (now points to what was the next track)
+			// But ensure it's valid
+			if (this.playingIndex >= this.tracks.length) {
+				this.playingIndex = 0
+			}
+			if (this.nextIndex >= this.tracks.length) {
+				this.nextIndex = 0
+			}
+		}
+
+		// Ensure nextIndex is valid
+		if (this.nextIndex >= this.tracks.length) {
+			this.nextIndex = 0
+		}
+
+		// Save state and notify clients
+		this.saveState()
+		this.broadcastPlaylistUpdate()
+
+		// If the currently playing track was removed, trigger skip
+		if (isCurrentlyPlaying && this.onSkipCurrentTrack) {
+			console.log('[PlaylistManager] Currently playing track was deleted, triggering skip...')
+			this.onSkipCurrentTrack()
+		}
+	}
+
+	/**
+	 * Get the currently playing track (for skip detection)
+	 */
+	getCurrentTrack(): Track | undefined {
+		return this.tracks[this.playingIndex]
+	}
+
+	/**
+	 * Broadcast playlist update to all SSE clients
+	 */
+	private broadcastPlaylistUpdate(): void {
 		const data = {
 			type: 'playlist',
 			tracks: this.tracks,
@@ -96,8 +215,6 @@ class PlaylistManager {
 				this.sseClients.delete(client)
 			}
 		}
-
-		console.log(`[PlaylistManager] Rescan complete: ${this.tracks.length} tracks`)
 	}
 
 	getNextTrack(): Track | undefined {
@@ -209,8 +326,7 @@ class PlaylistManager {
 			const currentTrack = this.tracks[this.playingIndex]
 			const state: PlaylistState = {
 				playlistOrder,
-				currentTrackFilename:
-					currentTrack ? path.basename(currentTrack.path) : null,
+				currentTrackFilename: currentTrack ? path.basename(currentTrack.path) : null,
 				currentTrackIndex: this.playingIndex,
 				lastUpdated: Date.now(),
 			}
