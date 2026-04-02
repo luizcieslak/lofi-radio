@@ -43,8 +43,21 @@ const storage = multer.diskStorage({
 		cb(null, SONGS_DIR)
 	},
 	filename: (req, file, cb) => {
-		// Keep original filename
-		cb(null, file.originalname)
+		// Fix UTF-8 double-encoding issue: multer interprets UTF-8 bytes as Latin-1
+		// Convert back to proper UTF-8
+		let filename = file.originalname
+		try {
+			// If the filename contains high bytes, it's likely mis-decoded UTF-8
+			if (/[\u0080-\u00ff]/.test(filename)) {
+				// Re-encode as Latin-1 bytes, then decode as UTF-8
+				const latin1Bytes = Buffer.from(filename, 'latin1')
+				filename = latin1Bytes.toString('utf8')
+			}
+		} catch (err) {
+			// If conversion fails, keep original
+			console.warn('Failed to fix filename encoding:', err)
+		}
+		cb(null, filename)
 	},
 })
 
