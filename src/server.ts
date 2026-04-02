@@ -58,7 +58,7 @@ const upload = multer({
 		if (file.mimetype === 'audio/mpeg' || file.originalname.endsWith('.mp3')) {
 			cb(null, true)
 		} else {
-			cb(new Error('Only MP3 files are allowed'))
+			cb(null, false) // Gracefully reject instead of throwing
 		}
 	},
 })
