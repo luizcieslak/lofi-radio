@@ -894,6 +894,36 @@
       errorEl.textContent = '';
     });
 
+    // Playback watchdog - detect silent stream death (especially on mobile lock screen)
+    // Mobile browsers may kill HTTP connections without firing error/pause/ended events
+    let lastWatchdogTime = 0;
+    let watchdogStallCount = 0;
+
+    setInterval(() => {
+      if (!isPlaying) {
+        watchdogStallCount = 0;
+        return;
+      }
+
+      const currentTime = audio.currentTime;
+
+      // If playing but time not advancing for 3+ checks (6s) = dead stream
+      if (currentTime === lastWatchdogTime && audio.readyState > 0) {
+        watchdogStallCount++;
+        console.log(`[Watchdog] Stall ${watchdogStallCount}: time=${currentTime} readyState=${audio.readyState}`);
+
+        if (watchdogStallCount >= 3) {
+          console.log('[Watchdog] Stream appears dead, forcing reconnect');
+          reconnect();
+          watchdogStallCount = 0;
+        }
+      } else {
+        watchdogStallCount = 0;
+      }
+
+      lastWatchdogTime = currentTime;
+    }, 2000); // check every 2s
+
     // Media Session API - handle car/lock screen controls
     if ('mediaSession' in navigator) {
       navigator.mediaSession.setActionHandler('play', play);
