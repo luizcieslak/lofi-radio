@@ -924,6 +924,20 @@
       lastWatchdogTime = currentTime;
     }, 2000); // check every 2s
 
+    // Diagnostic logging - track state changes and visibility
+    let lastLoggedState = '';
+    setInterval(() => {
+      const state = `playing=${isPlaying} paused=${audio.paused} readyState=${audio.readyState} time=${audio.currentTime.toFixed(1)}`;
+      if (state !== lastLoggedState) {
+        console.log(`[State] ${state}`);
+        lastLoggedState = state;
+      }
+    }, 1000);
+
+    document.addEventListener('visibilitychange', () => {
+      console.log(`[Visibility] ${document.visibilityState} at ${new Date().toISOString()}`);
+    });
+
     // Media Session API - handle car/lock screen controls
     if ('mediaSession' in navigator) {
       navigator.mediaSession.setActionHandler('play', play);
