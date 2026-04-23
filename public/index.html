@@ -792,6 +792,8 @@
 
     // Audio Controls
     function play() {
+      manualPause = false;
+      clearReconnectTimer();
       audio.src = `/stream?sid=${sessionId}&t=${Date.now()}`;
       audio.play()
         .then(() => {
@@ -808,6 +810,9 @@
     }
 
     function pause() {
+      manualPause = true;
+      clearReconnectTimer();
+      clearStalledTimer();
       audio.pause();
       audio.src = '';
       isPlaying = false;
@@ -831,64 +836,88 @@
       statusEl.className = 'status';
     });
 
-    // Robust reconnection logic
+    // Defensive reconnection logic
     let reconnectAttempts = 0;
     const maxReconnectDelay = 30000; // max 30s between attempts
+    let reconnectTimer = null;
+    let stalledTimer = null;
+    let manualPause = false;
 
-    function reconnect() {
+    function clearReconnectTimer() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    }
+
+    function clearStalledTimer() {
+      if (stalledTimer) {
+        clearTimeout(stalledTimer);
+        stalledTimer = null;
+      }
+    }
+
+    function reconnect(reason) {
       if (!isPlaying) return;
-      
+      if (reconnectTimer) return;
+
       reconnectAttempts++;
-      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), maxReconnectDelay);
-      
+      const delay = Math.min(1000 * 1.5 ** (reconnectAttempts - 1), maxReconnectDelay);
+
       statusEl.textContent = `Reconnecting (${reconnectAttempts})...`;
       statusEl.className = 'status';
-      errorEl.textContent = `Stream interrupted. Retrying in ${Math.round(delay/1000)}s...`;
-      
-      setTimeout(() => {
+      errorEl.textContent = `Stream interrupted (${reason}). Retrying in ${Math.round(delay/1000)}s...`;
+
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
         if (!isPlaying) return;
-        console.log(`[Reconnect] Attempt ${reconnectAttempts}`);
-        audio.src = `/stream?${Date.now()}`;
-        audio.play().catch(() => reconnect());
+        console.log(`[Reconnect] Attempt ${reconnectAttempts} after ${reason}`);
+        audio.src = `/stream?sid=${sessionId}&t=${Date.now()}`;
+        audio.play().catch(() => reconnect('play-failed'));
       }, delay);
     }
 
     audio.addEventListener('error', () => {
       console.log('[Audio] Error event');
-      reconnect();
+      reconnect('error');
     });
 
     audio.addEventListener('stalled', () => {
       console.log('[Audio] Stalled event');
-      // Only reconnect if stalled for too long
-      setTimeout(() => {
+      clearStalledTimer();
+      stalledTimer = setTimeout(() => {
+        stalledTimer = null;
         if (audio.readyState < 3 && isPlaying) {
-          reconnect();
+          reconnect('stalled');
         }
       }, 5000);
     });
 
+    audio.addEventListener('progress', clearStalledTimer);
+    audio.addEventListener('playing', clearStalledTimer);
+
     // Detect unexpected pause (stream dropped without error event)
     audio.addEventListener('pause', () => {
-      console.log('[Audio] Pause event, isPlaying:', isPlaying);
-      // If we didn't initiate the pause, try to reconnect
-      if (isPlaying) {
-        console.log('[Audio] Unexpected pause, reconnecting...');
-        reconnect();
+      console.log('[Audio] Pause event, isPlaying:', isPlaying, 'manualPause:', manualPause);
+      if (manualPause) {
+        manualPause = false;
+        return;
       }
     });
 
-    // Handle stream end
+    // Handle actual stream end
     audio.addEventListener('ended', () => {
       console.log('[Audio] Ended event');
       if (isPlaying) {
-        reconnect();
+        reconnect('ended');
       }
     });
 
     // Reset reconnect counter on successful play
     audio.addEventListener('playing', () => {
       reconnectAttempts = 0;
+      clearReconnectTimer();
+      clearStalledTimer();
       statusEl.textContent = 'LIVE';
       statusEl.className = 'status live';
       errorEl.textContent = '';
