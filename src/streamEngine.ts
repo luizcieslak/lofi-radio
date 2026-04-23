@@ -16,7 +16,6 @@ interface PreloadedTrack {
 }
 
 interface StreamTrackResult {
-	completed: boolean
 	nextPreloaded: PreloadedTrack | null
 }
 
@@ -190,7 +189,7 @@ class StreamEngine {
 	 */
 	private async streamTrack(
 		current: PreloadedTrack,
-		getNextTrack: () => Promise<Track | undefined>,
+		peekNextTrack: () => Promise<Track | undefined>,
 	): Promise<StreamTrackResult> {
 		const trackStartTs = Date.now()
 		console.log(`[Engine] Now playing: ${current.track.artist} - ${current.track.title}`)
@@ -230,7 +229,7 @@ class StreamEngine {
 
 			if (!nextPreloaded && frameCount % 500 === 0) {
 				preloadStartedAt = Date.now()
-				const nextTrack = await getNextTrack()
+				const nextTrack = await peekNextTrack()
 				if (nextTrack) {
 					if (fs.existsSync(nextTrack.path)) {
 						nextPreloaded = this.prepareTrack(nextTrack)
@@ -283,7 +282,6 @@ class StreamEngine {
 		}
 
 		return {
-			completed: !wasSkipped,
 			nextPreloaded,
 		}
 	}
@@ -291,7 +289,10 @@ class StreamEngine {
 	/**
 	 * Start the streaming engine with a track provider function
 	 */
-	async start(getNextTrack: () => Promise<Track | undefined>): Promise<void> {
+	async start(
+		peekNextTrack: () => Promise<Track | undefined>,
+		commitNextTrack: (track: Track) => Promise<Track | undefined>,
+	): Promise<void> {
 		this.isRunning = true
 		console.log('[Engine] Started')
 
@@ -299,28 +300,47 @@ class StreamEngine {
 
 		while (this.isRunning) {
 			if (!currentPreloaded) {
-				const track = await getNextTrack()
+				const nextTrack = await peekNextTrack()
 
-				if (!track) {
+				if (!nextTrack) {
 					console.log('[Engine] No tracks available, waiting 5s...')
 					await new Promise(resolve => setTimeout(resolve, 5000))
 					continue
 				}
 
-				if (!fs.existsSync(track.path)) {
-					console.error(`[Engine] File not found: ${track.path}`)
+				const committedTrack = await commitNextTrack(nextTrack)
+				if (!committedTrack) {
 					continue
 				}
 
-				currentPreloaded = this.prepareTrack(track)
+				if (!fs.existsSync(committedTrack.path)) {
+					console.error(`[Engine] File not found: ${committedTrack.path}`)
+					continue
+				}
+
+				currentPreloaded = this.prepareTrack(committedTrack)
 				if (!currentPreloaded) {
 					continue
 				}
 			}
 
 			try {
-				const result = await this.streamTrack(currentPreloaded, getNextTrack)
+				const result = await this.streamTrack(currentPreloaded, peekNextTrack)
 				currentPreloaded = result.nextPreloaded
+				if (currentPreloaded) {
+					const committedTrack = await commitNextTrack(currentPreloaded.track)
+					if (!committedTrack) {
+						this.closePreloadedTrack(currentPreloaded)
+						currentPreloaded = null
+						continue
+					}
+
+					if (committedTrack.id !== currentPreloaded.track.id) {
+						console.warn(
+							`[Engine] Preloaded track mismatch. Expected ${currentPreloaded.track.title}, got ${committedTrack.title}.`,
+						)
+					}
+				}
 			} catch (err) {
 				console.error('[Engine] Error streaming track:', err)
 				this.closePreloadedTrack(currentPreloaded)

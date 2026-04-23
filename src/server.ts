@@ -446,13 +446,21 @@ app.use(express.static(path.join(__dirname, '../public')))
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Start the streaming engine in the background
-engine.start(async () => {
-	const track = playlistManager.getNextTrack()
-	if (track) {
-		// Notify playlist manager of track change for SSE clients
-		playlistManager.notifyTrackChange(track)
+engine.start(async () => playlistManager.peekNextTrack(), async track => {
+	const committedTrack = playlistManager.commitNextTrack()
+
+	if (!committedTrack) {
+		return undefined
 	}
-	return track
+
+	if (committedTrack.id !== track.id) {
+		console.warn(
+			`[Server] Track commit mismatch. Expected ${track.title}, got ${committedTrack.title}. Using committed track.`,
+		)
+	}
+
+	playlistManager.notifyTrackChange(committedTrack)
+	return committedTrack
 })
 
 // Graceful shutdown

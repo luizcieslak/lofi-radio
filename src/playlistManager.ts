@@ -217,7 +217,15 @@ class PlaylistManager {
 		}
 	}
 
-	getNextTrack(): Track | undefined {
+	peekNextTrack(): Track | undefined {
+		if (this.tracks.length === 0) {
+			return undefined
+		}
+
+		return this.tracks[this.nextIndex]
+	}
+
+	commitNextTrack(): Track | undefined {
 		if (this.tracks.length === 0) {
 			return undefined
 		}
