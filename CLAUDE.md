@@ -8,6 +8,7 @@
 
 - 🎵 **Frame-accurate MP3 streaming** using custom MP3 parser
 - 🔄 **Perfect synchronization** across multiple listeners
+- ⏭️ **Smoother track transitions** via next-track preload before handoff
 - 📡 **Real-time metadata updates** via SSE
 - 🎨 **Beautiful web player UI** with playlist management
 - 🐳 **Docker support** for easy deployment
@@ -25,6 +26,7 @@
 The heart of the streaming system. Handles:
 
 - Frame-by-frame MP3 streaming with precise timing
+- Preloading the next track before handoff to reduce audible gaps
 - Multiple concurrent audio stream clients
 - SSE clients for metadata updates
 - Synchronized playback across all listeners
@@ -323,17 +325,14 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 
 ### 🚧 Limitations & Known Issues
 
-1. **No metadata extraction from MP3 files**
+1. **Track transition preload still needs hardening**
 
-   - Track titles are derived from filenames
-   - Artist set to "Unknown Artist"
-   - No album art extraction (ID3 tags not parsed)
+   - Next-track preload is implemented and improves audible handoff between songs
+   - Preload timing should move closer to EOF to reduce the stale-preload window
+   - Before committing a preloaded track, the server should verify it still matches `peekNextTrack()`
+   - Long-run validation with `mpv` or another dumb client is still pending
 
-2. **No authentication on admin routes**
-
-   - Anyone can access `/admin/*` endpoints
-
-3. **Track-level persistence only**
+2. **Track-level persistence only**
 
    - Resumes from start of saved track (not mid-song)
    - Frame-precise resume not yet implemented
