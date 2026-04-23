@@ -8,6 +8,18 @@ interface StreamSession {
 	connectedAt: number
 }
 
+interface PreloadedTrack {
+	track: Track
+	reader: Mp3FrameReader
+	firstFrame: ReturnType<Mp3FrameReader['readNextFrame']>
+	preparedAt: number
+}
+
+interface StreamTrackResult {
+	completed: boolean
+	nextPreloaded: PreloadedTrack | null
+}
+
 class StreamEngine {
 	private clients: Set<Response> = new Set()
 	private sessions: Map<string, StreamSession> = new Map() // sessionId -> session
@@ -149,29 +161,62 @@ class StreamEngine {
 		}
 	}
 
+	private prepareTrack(track: Track): PreloadedTrack | null {
+		const preparedAt = Date.now()
+		const reader = new Mp3FrameReader(track.path)
+		const firstFrame = reader.readNextFrame()
+
+		if (!firstFrame) {
+			reader.close()
+			console.warn(`[Engine] Could not preload track (no frames): ${track.title}`)
+			return null
+		}
+
+		return {
+			track,
+			reader,
+			firstFrame,
+			preparedAt,
+		}
+	}
+
+	private closePreloadedTrack(preloaded: PreloadedTrack | null): void {
+		if (!preloaded) return
+		preloaded.reader.close()
+	}
+
 	/**
 	 * Stream a single track to all listeners
-	 * Returns true if track completed normally, false if skipped
 	 */
-	private async streamTrack(track: Track): Promise<boolean> {
-		console.log(`[Engine] Now playing: ${track.artist} - ${track.title}`)
+	private async streamTrack(
+		current: PreloadedTrack,
+		getNextTrack: () => Promise<Track | undefined>,
+	): Promise<StreamTrackResult> {
+		const trackStartTs = Date.now()
+		console.log(`[Engine] Now playing: ${current.track.artist} - ${current.track.title}`)
+		console.log(
+			`[Engine] Track preload ready in ${trackStartTs - current.preparedAt}ms for: ${current.track.title}`,
+		)
 
 		// Reset skip flag at start of track
 		this.skipRequested = false
 
 		// Update now playing and notify SSE clients
 		this.nowPlaying = {
-			track,
-			startedAt: Date.now(),
+			track: current.track,
+			startedAt: trackStartTs,
 		}
 		this.broadcastMetadata()
 
-		const reader = new Mp3FrameReader(track.path)
 		const timer = new PreciseTimer()
+		const reader = current.reader
 
 		let frameCount = 0
 		let wasSkipped = false
-		let frame = reader.readNextFrame()
+		let frame = current.firstFrame
+		let nextPreloaded: PreloadedTrack | null = null
+		let preloadStartedAt: number | null = null
+		let boundaryMarkedAt: number | null = null
 
 		while (frame && this.isRunning && !this.skipRequested) {
 			// Send frame to all clients
@@ -180,12 +225,35 @@ class StreamEngine {
 			// Add frame duration to our time budget
 			timer.addTime(frame.header.frameDurationMs)
 
+			const nextFrame = reader.readNextFrame()
+			frameCount++
+
+			if (!nextPreloaded && frameCount % 500 === 0) {
+				preloadStartedAt = Date.now()
+				const nextTrack = await getNextTrack()
+				if (nextTrack) {
+					if (fs.existsSync(nextTrack.path)) {
+						nextPreloaded = this.prepareTrack(nextTrack)
+						if (nextPreloaded && preloadStartedAt) {
+							console.log(
+								`[Engine] Preloaded next track in ${Date.now() - preloadStartedAt}ms: ${nextTrack.title}`,
+							)
+						}
+					} else {
+						console.error(`[Engine] File not found while preloading: ${nextTrack.path}`)
+					}
+				}
+			}
+
+			if (!nextFrame && !boundaryMarkedAt) {
+				boundaryMarkedAt = Date.now()
+				console.log(`[Engine] Boundary reached for ${current.track.title} after ${frameCount} frames`)
+			}
+
 			// Wait until it's time for the next frame
 			await timer.wait()
 
-			// Read next frame
-			frame = reader.readNextFrame()
-			frameCount++
+			frame = nextFrame
 
 			// Log progress every ~30 seconds (assuming ~26ms per frame)
 			if (frameCount % 1150 === 0) {
@@ -195,20 +263,29 @@ class StreamEngine {
 			}
 		}
 
+		if (boundaryMarkedAt) {
+			console.log(
+				`[Engine] Track ended for ${current.track.title}; handoff gap so far ${Date.now() - boundaryMarkedAt}ms`,
+			)
+		}
+
 		// Check if we exited due to skip request
 		if (this.skipRequested) {
 			wasSkipped = true
 			this.skipRequested = false
-			console.log(`[Engine] Skipped: ${track.title} (at frame ${frameCount})`)
+			console.log(`[Engine] Skipped: ${current.track.title} (at frame ${frameCount})`)
 		}
 
 		reader.close()
 
 		if (!wasSkipped) {
-			console.log(`[Engine] Finished: ${track.title} (${frameCount} frames)`)
+			console.log(`[Engine] Finished: ${current.track.title} (${frameCount} frames)`)
 		}
 
-		return !wasSkipped
+		return {
+			completed: !wasSkipped,
+			nextPreloaded,
+		}
 	}
 
 	/**
@@ -218,29 +295,41 @@ class StreamEngine {
 		this.isRunning = true
 		console.log('[Engine] Started')
 
+		let currentPreloaded: PreloadedTrack | null = null
+
 		while (this.isRunning) {
-			const track = await getNextTrack()
+			if (!currentPreloaded) {
+				const track = await getNextTrack()
 
-			if (!track) {
-				console.log('[Engine] No tracks available, waiting 5s...')
-				await new Promise(resolve => setTimeout(resolve, 5000))
-				continue
-			}
+				if (!track) {
+					console.log('[Engine] No tracks available, waiting 5s...')
+					await new Promise(resolve => setTimeout(resolve, 5000))
+					continue
+				}
 
-			// Check if file exists
-			if (!fs.existsSync(track.path)) {
-				console.error(`[Engine] File not found: ${track.path}`)
-				continue
+				if (!fs.existsSync(track.path)) {
+					console.error(`[Engine] File not found: ${track.path}`)
+					continue
+				}
+
+				currentPreloaded = this.prepareTrack(track)
+				if (!currentPreloaded) {
+					continue
+				}
 			}
 
 			try {
-				await this.streamTrack(track)
+				const result = await this.streamTrack(currentPreloaded, getNextTrack)
+				currentPreloaded = result.nextPreloaded
 			} catch (err) {
 				console.error('[Engine] Error streaming track:', err)
-				// Wait a bit before trying next track
+				this.closePreloadedTrack(currentPreloaded)
+				currentPreloaded = null
 				await new Promise(resolve => setTimeout(resolve, 1000))
 			}
 		}
+
+		this.closePreloadedTrack(currentPreloaded)
 	}
 
 	stop(): void {
