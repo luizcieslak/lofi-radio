@@ -317,20 +317,25 @@ class PlaylistManager {
 		}
 	}
 
+	private savePending: Promise<void> = Promise.resolve()
+
 	/**
-	 * Save current state to disk
+	 * Schedule a non-blocking state save. Calls are serialized through
+	 * `savePending` so concurrent writers can't interleave on the state file.
+	 * Returns immediately — callers on the streaming hot path don't await disk IO.
 	 */
 	private saveState(): void {
+		this.savePending = this.savePending.then(() => this.writeStateToDisk())
+	}
+
+	private async writeStateToDisk(): Promise<void> {
 		try {
-			// Ensure state directory exists
 			const stateDir = path.dirname(STATE_FILE)
 			if (!fs.existsSync(stateDir)) {
 				fs.mkdirSync(stateDir, { recursive: true })
 			}
 
-			// Extract filenames from current playlist
 			const playlistOrder = this.tracks.map(track => path.basename(track.path))
-
 			const currentTrack = this.tracks[this.playingIndex]
 			const state: PlaylistState = {
 				playlistOrder,
@@ -339,7 +344,7 @@ class PlaylistManager {
 				lastUpdated: Date.now(),
 			}
 
-			fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8')
+			await fs.promises.writeFile(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8')
 			console.log('[PlaylistManager] State saved:', state.currentTrackFilename)
 		} catch (err) {
 			console.error('[PlaylistManager] Failed to save state:', err)

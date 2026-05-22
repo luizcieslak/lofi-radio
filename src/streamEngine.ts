@@ -184,12 +184,41 @@ class StreamEngine {
 		preloaded.reader.close()
 	}
 
+	private async preloadFromPeek(
+		peekNextTrack: () => Promise<Track | undefined>,
+	): Promise<PreloadedTrack | null> {
+		const startedAt = Date.now()
+		const nextTrack = await peekNextTrack()
+		if (!nextTrack) return null
+
+		if (!fs.existsSync(nextTrack.path)) {
+			console.error(`[Engine] File not found while preloading: ${nextTrack.path}`)
+			return null
+		}
+
+		const preloaded = this.prepareTrack(nextTrack)
+		if (preloaded) {
+			console.log(
+				`[Engine] Preloaded next track in ${Date.now() - startedAt}ms: ${nextTrack.title}`,
+			)
+		}
+		return preloaded
+	}
+
 	/**
-	 * Stream a single track to all listeners
+	 * Stream a single track to all listeners.
+	 *
+	 * Handoff strategy: when the last frame is read, we commit the preloaded
+	 * track (after verifying it still matches `peekNextTrack()`) BEFORE the
+	 * final `timer.wait()`. That overlaps the commit work (SSE broadcast,
+	 * fire-and-forget state save) with the ~26ms wait for the last frame,
+	 * so by the time we return, the next track is ready to broadcast its
+	 * already-loaded first frame with near-zero gap.
 	 */
 	private async streamTrack(
 		current: PreloadedTrack,
 		peekNextTrack: () => Promise<Track | undefined>,
+		commitNextTrack: (track: Track) => Promise<Track | undefined>,
 	): Promise<StreamTrackResult> {
 		const trackStartTs = Date.now()
 		console.log(`[Engine] Now playing: ${current.track.artist} - ${current.track.title}`)
@@ -197,10 +226,8 @@ class StreamEngine {
 			`[Engine] Track preload ready in ${trackStartTs - current.preparedAt}ms for: ${current.track.title}`,
 		)
 
-		// Reset skip flag at start of track
 		this.skipRequested = false
 
-		// Update now playing and notify SSE clients
 		this.nowPlaying = {
 			track: current.track,
 			startedAt: trackStartTs,
@@ -214,50 +241,63 @@ class StreamEngine {
 		let wasSkipped = false
 		let frame = current.firstFrame
 		let nextPreloaded: PreloadedTrack | null = null
-		let preloadStartedAt: number | null = null
+		let committed = false
 		let boundaryMarkedAt: number | null = null
 
 		while (frame && this.isRunning && !this.skipRequested) {
-			// Send frame to all clients
 			this.broadcast(frame.data)
-
-			// Add frame duration to our time budget
 			timer.addTime(frame.header.frameDurationMs)
 
 			const nextFrame = reader.readNextFrame()
 			frameCount++
 
-			if (!nextPreloaded && frameCount % 500 === 0) {
-				preloadStartedAt = Date.now()
-				const nextTrack = await peekNextTrack()
-				if (nextTrack) {
-					if (fs.existsSync(nextTrack.path)) {
-						nextPreloaded = this.prepareTrack(nextTrack)
-						if (nextPreloaded && preloadStartedAt) {
+			// Trigger preload once around 500 frames in (~13s). Done before EOF
+			// so the file read + ID3 skip + first-frame parse is off the hot path.
+			if (!nextPreloaded && frameCount === 500) {
+				nextPreloaded = await this.preloadFromPeek(peekNextTrack)
+			}
+
+			// EOF detected. Do the handoff work now, before the final wait().
+			// The next track's first frame is already in memory (preloaded), so
+			// after this block the only gap is "exit loop → re-enter streamTrack
+			// → broadcast first frame", which is sub-millisecond.
+			if (!nextFrame && !committed) {
+				boundaryMarkedAt = Date.now()
+				console.log(
+					`[Engine] Boundary reached for ${current.track.title} after ${frameCount} frames`,
+				)
+
+				if (nextPreloaded) {
+					const fresh = await peekNextTrack()
+					if (fresh && fresh.id === nextPreloaded.track.id) {
+						const result = await commitNextTrack(nextPreloaded.track)
+						if (result) {
+							committed = true
 							console.log(
-								`[Engine] Preloaded next track in ${Date.now() - preloadStartedAt}ms: ${nextTrack.title}`,
+								`[Engine] Committed handoff in ${Date.now() - boundaryMarkedAt}ms: ${result.title}`,
 							)
+						} else {
+							console.warn('[Engine] commitNextTrack returned undefined during handoff')
+							this.closePreloadedTrack(nextPreloaded)
+							nextPreloaded = null
 						}
 					} else {
-						console.error(`[Engine] File not found while preloading: ${nextTrack.path}`)
+						console.warn(
+							`[Engine] Preloaded track stale (expected ${nextPreloaded.track.title}, peek now ${fresh?.title ?? 'none'}); discarding`,
+						)
+						this.closePreloadedTrack(nextPreloaded)
+						nextPreloaded = null
 					}
 				}
 			}
 
-			if (!nextFrame && !boundaryMarkedAt) {
-				boundaryMarkedAt = Date.now()
-				console.log(`[Engine] Boundary reached for ${current.track.title} after ${frameCount} frames`)
-			}
-
-			// Wait until it's time for the next frame
 			await timer.wait()
-
 			frame = nextFrame
 
-			// Log progress every ~30 seconds (assuming ~26ms per frame)
 			if (frameCount % 1150 === 0) {
 				console.log(
-					`[Engine] Progress: ${Math.round((frameCount * 26) / 1000)}s, ` + `${this.clients.size} listeners`,
+					`[Engine] Progress: ${Math.round((frameCount * 26) / 1000)}s, ` +
+						`${this.clients.size} listeners`,
 				)
 			}
 		}
@@ -268,7 +308,6 @@ class StreamEngine {
 			)
 		}
 
-		// Check if we exited due to skip request
 		if (this.skipRequested) {
 			wasSkipped = true
 			this.skipRequested = false
@@ -281,9 +320,14 @@ class StreamEngine {
 			console.log(`[Engine] Finished: ${current.track.title} (${frameCount} frames)`)
 		}
 
-		return {
-			nextPreloaded,
+		// On skip, the preloaded track is no longer guaranteed to match the
+		// playlist's current head — throw it away and let the outer loop fetch fresh.
+		if (wasSkipped && nextPreloaded) {
+			this.closePreloadedTrack(nextPreloaded)
+			return { nextPreloaded: null }
 		}
+
+		return { nextPreloaded: committed ? nextPreloaded : null }
 	}
 
 	/**
@@ -325,22 +369,11 @@ class StreamEngine {
 			}
 
 			try {
-				const result = await this.streamTrack(currentPreloaded, peekNextTrack)
+				const result = await this.streamTrack(currentPreloaded, peekNextTrack, commitNextTrack)
+				// streamTrack has already committed the next track (with stale-check)
+				// before returning it, so currentPreloaded is either ready to play
+				// immediately or null (forcing a fresh peek+commit+prepare next iteration).
 				currentPreloaded = result.nextPreloaded
-				if (currentPreloaded) {
-					const committedTrack = await commitNextTrack(currentPreloaded.track)
-					if (!committedTrack) {
-						this.closePreloadedTrack(currentPreloaded)
-						currentPreloaded = null
-						continue
-					}
-
-					if (committedTrack.id !== currentPreloaded.track.id) {
-						console.warn(
-							`[Engine] Preloaded track mismatch. Expected ${currentPreloaded.track.title}, got ${committedTrack.title}.`,
-						)
-					}
-				}
 			} catch (err) {
 				console.error('[Engine] Error streaming track:', err)
 				this.closePreloadedTrack(currentPreloaded)
