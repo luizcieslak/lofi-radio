@@ -33,10 +33,11 @@ The heart of the streaming system. Handles:
 
 **Key Methods:**
 
-- `addClient(res)` - Adds audio stream listener
+- `addClient(res, sessionId?)` - Adds audio stream listener; `sessionId` (per-tab) dedupes reconnects and powers the unique-listener count
 - `addSSEClient(res)` - Adds metadata SSE listener
-- `start(getNextTrack)` - Starts streaming loop
-- `streamTrack(track)` - Streams a single track with precise timing
+- `start(peekNextTrack, commitNextTrack)` - Starts streaming loop using peek/commit so the next track is only advanced after the engine actually plays it
+- `skipCurrentTrack()` - Signals the current track to stop at the next frame (used when a playing track is deleted)
+- `streamTrack(current, peekNextTrack, commitNextTrack)` - Streams a single track; preloads next track ~13s in and commits the handoff at EOF (after re-verifying it still matches `peekNextTrack()`)
 
 #### 2. **Mp3FrameReader** ([src/mp3parser.ts](src/mp3parser.ts))
 
@@ -66,24 +67,30 @@ Nanosecond-accuracy timing system using `process.hrtime.bigint()`:
 Manages the track queue with persistence:
 
 - Loads MP3 files from `songs/` directory
-- Tracks current playing index
-- Notifies SSE clients of track changes
+- Tracks current playing index (separate `playingIndex` vs `nextIndex` for peek/commit)
+- Notifies SSE clients of track changes and playlist updates
 - Provides playlist API
-- **Persists playlist state** to `src/state/state.json`
+- **Persists playlist state** to `songs/.radio-state/state.json` (inside the songs volume for Railway)
 - **Reconciles playlists** on startup (maintains order, handles added/removed songs)
+- **Reactive add/remove** without interrupting playback (`addTrack`, `removeTrack`); deleting the playing track triggers an auto-skip
+- **Non-blocking persistence** - state saves are serialized through a chained promise so the streaming hot path never awaits disk IO
 
 **Key Methods:**
 
-- `loadState()` - Loads persisted state from disk on startup
-- `saveState()` - Saves current playlist order and track position to JSON
+- `peekNextTrack()` / `commitNextTrack()` - Look at the next track without advancing vs actually advance the cursor (lets the engine preload speculatively)
+- `addTrack(filename)` / `removeTrack(filename)` - Reactive playlist mutations
+- `setSkipCallback(cb)` - Engine registers its `skipCurrentTrack` here; called when the playing track is deleted
+- `notifyTrackChange(track)` - Updates `playingIndex`, broadcasts to SSE clients, persists state
+- `rescan()` - Full reload from disk
+- `loadState()` / `saveState()` - Persistence (saveState schedules a non-blocking write)
 - `reconcilePlaylist(state)` - Merges saved playlist with current disk contents
 
 #### 5. **MetadataManager** ([src/metadataManager.ts](src/metadataManager.ts))
 
 Manages track metadata with ID3 extraction and manual override support:
 
-- Extracts ID3 tags from uploaded MP3s (title, artist, album, duration)
-- Stores metadata in `src/state/tracks-meta.json`
+- Extracts ID3 tags from uploaded MP3s (title, artist, album, durationMs)
+- Stores metadata in `songs/.radio-state/tracks-meta.json`
 - Supports manual override of extracted metadata
 - Priority: manual edit > stored metadata > ID3 tags > filename fallback
 
