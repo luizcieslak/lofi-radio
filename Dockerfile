@@ -22,5 +22,5 @@ RUN mkdir -p /app/songs /app/src/state
 # Railway will provide PORT env var, but expose default for local testing
 EXPOSE 5634
 
-# Run the Express server (not legacy index.ts)
+# Run the Express server
 CMD ["bun", "run", "src/server.ts"]

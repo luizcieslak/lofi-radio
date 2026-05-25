@@ -107,22 +107,24 @@ Manages track metadata with ID3 extraction and manual override support:
 Each track can have the following metadata:
 
 ```typescript
-interface TrackMetadata {
-  // Core metadata (from ID3 or manual)
+interface Track {
+  id: string;
+  path: string;
   title: string;
   artist: string;
   album?: string;
-  duration: number; // in seconds
-  
-  // Album artwork
-  coverUrl?: string; // Public URL to album cover image
-  
+  albumArtUrl?: string;   // Public URL to album cover image
+  durationMs?: number;    // Track duration in milliseconds
+
   // Platform links (external streaming services)
   spotifyUrl?: string;    // https://open.spotify.com/track/...
   youtubeUrl?: string;    // https://www.youtube.com/watch?v=...
   appleMusicUrl?: string; // https://music.apple.com/...
 }
 ```
+
+`TrackMetadata` (stored in `tracks-meta.json`) carries the same user-visible
+fields plus bookkeeping: `extractedFromId3`, `manuallyEdited`, `lastUpdated`.
 
 **Platform Links:**
 Tracks can include links to external streaming platforms, enabling features like:
@@ -132,7 +134,7 @@ Tracks can include links to external streaming platforms, enabling features like
 - Cross-platform track discovery
 
 **Album Covers:**
-Cover artwork is served via CDN URLs for optimal performance. The frontend can display album art using the `coverUrl` field.
+Cover artwork is served via CDN URLs for optimal performance. The frontend can display album art using the `albumArtUrl` field.
 
 #### 6. **Express Server** ([src/server.ts](src/server.ts))
 
@@ -151,10 +153,11 @@ REST API and web server with endpoints:
 - `POST /admin/upload` - Upload single MP3
 - `POST /admin/upload/batch` - Upload multiple MP3s
 - `GET /admin/songs` - List all songs
-- `DELETE /admin/songs/:filename` - Delete a song
+- `DELETE /admin/songs/:filename` - Delete a song (auto-skips if currently playing)
 - `GET /admin/tracks/:filename/metadata` - Get track metadata
 - `PATCH /admin/tracks/:filename/metadata` - Update track metadata
 - `POST /admin/rescan` - Rescan songs directory
+- `POST /admin/skip` - Placeholder skip endpoint (does not yet wire through to `engine.skipCurrentTrack()`)
 
 #### 7. **Web Player** ([public/index.html](public/index.html))
 
@@ -168,6 +171,8 @@ Modern, responsive web UI featuring:
 - Mobile responsive design
 - **Media Session API** - Track info shows on Bluetooth devices, car head units, lock screens
 - **Auto-reconnect** - Robust reconnection on stream drops (deploys, network issues)
+- **Mobile watchdog** - Detects silent stream death (e.g. background tabs on iOS) and forces a reconnect
+- **Per-tab session ID** - Each browser tab gets a sessionStorage-backed ID so the server can count unique listeners and close stale reconnects
 
 **Admin Panel** (click 🔐 button):
 - API key authentication (stored in localStorage)
@@ -187,24 +192,28 @@ lofi-radio/
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
 │   ├── playlistManager.ts  # Playlist management with persistence
 │   ├── metadataManager.ts  # Track metadata storage & ID3 extraction
+│   ├── playlist.ts         # Generated static playlist (legacy snapshot)
 │   └── types.ts            # TypeScript interfaces
-├── songs/
-│   ├── *.mp3               # Music files
+├── songs/                  # MP3 files directory (auto-scanned)
+│   ├── *.mp3
 │   └── .radio-state/       # Persisted state (inside volume for Railway)
 │       ├── state.json      # Playlist order & position
 │       └── tracks-meta.json # Track metadata
 ├── public/
-│   └── index.html          # Web player UI
-├── songs/                  # MP3 files directory (auto-scanned)
+│   └── index.html          # Web player UI (player + admin panel)
 ├── scripts/
-│   └── generatePlaylist.ts # Utility to generate playlist from files
+│   ├── generatePlaylist.ts # Utility to generate playlist from files
+│   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
+├── docs/                   # Project notes / design docs
 ├── index.ts                # Legacy Bun implementation (see notes)
-├── duration.ts             # Song duration utility
+├── duration.ts             # Legacy song duration utility
 ├── song-list.ts            # Legacy song list
 ├── package.json
 ├── tsconfig.json
-├── biome.json             # Code formatter/linter config
+├── biome.json              # Code formatter/linter config
 ├── Dockerfile
+├── docker-compose.yml
+├── railway.toml
 └── README.md
 ```
 
@@ -217,10 +226,10 @@ lofi-radio/
 1. **Startup:**
 
    - `PlaylistManager` scans `songs/` directory for MP3 files
-   - Loads persisted state from `src/state/state.json` if it exists
+   - Loads persisted state from `songs/.radio-state/state.json` if it exists
    - Reconciles saved playlist with current disk contents
    - Resumes from last playing track (or starts fresh)
-   - `StreamEngine` starts and requests first track from `PlaylistManager`
+   - `StreamEngine` starts with `peekNextTrack` / `commitNextTrack` callbacks from `PlaylistManager`
    - Express server listens on port 5634
 
 2. **Client Connection:**
