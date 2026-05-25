@@ -205,9 +205,6 @@ lofi-radio/
 │   ├── generatePlaylist.ts # Utility to generate playlist from files
 │   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
 ├── docs/                   # Project notes / design docs
-├── index.ts                # Legacy Bun implementation (see notes)
-├── duration.ts             # Legacy song duration utility
-├── song-list.ts            # Legacy song list
 ├── package.json
 ├── tsconfig.json
 ├── biome.json              # Code formatter/linter config
@@ -250,11 +247,11 @@ lofi-radio/
    ```
 
 4. **Track Changes:**
-   - When track ends, `PlaylistManager.getNextTrack()` is called
-   - New track starts streaming
-   - SSE clients receive metadata update
-   - **State is automatically saved** to `state.json`
-   - Web UI updates automatically
+   - Around ~13s into the current track, the engine speculatively preloads the next track via `peekNextTrack()` (file open + ID3 skip + first-frame parse off the hot path)
+   - At EOF, the engine re-verifies the preload still matches `peekNextTrack()`; if so it calls `commitNextTrack()` and broadcasts the new metadata — all overlapped with the final frame's ~26ms wait so the audible gap is sub-millisecond
+   - If the preload is stale (playlist changed mid-track) it's discarded and the next iteration fetches fresh
+   - State is persisted via a non-blocking, serialized write to `state.json`
+   - Web UI updates automatically via SSE
 
 ### Synchronization Strategy
 
@@ -341,38 +338,20 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 
 ### 🚧 Limitations & Known Issues
 
-1. **Track transition preload still needs hardening**
+1. **Track transition preload**
 
-   - Next-track preload is implemented and improves audible handoff between songs
-   - Preload timing should move closer to EOF to reduce the stale-preload window
-   - Before committing a preloaded track, the server should verify it still matches `peekNextTrack()`
-   - Long-run validation with `mpv` or another dumb client is still pending
+   - Preload fires at ~13s in (frame 500). Stale-preload window exists but is bounded by an EOF re-verification against `peekNextTrack()`; mismatches are discarded.
+   - Commit work is overlapped with the final frame's wait, so the handoff gap is sub-millisecond in the happy path.
+   - Long-run validation with `mpv` or another dumb client is still pending.
 
 2. **Track-level persistence only**
 
    - Resumes from start of saved track (not mid-song)
    - Frame-precise resume not yet implemented
 
----
+3. **`POST /admin/skip` is a stub**
 
-## Code Duplication Note
-
-There are **TWO implementations** in this repository:
-
-### 1. **Express Implementation (Current/Recommended)**
-
-- Files: `src/server.ts`, `src/streamEngine.ts`, etc.
-- Runs via: `bun run src/server.ts` or `npm run dev`
-- Status: **Fully functional**, production-ready
-
-### 2. **Legacy Bun Implementation**
-
-- File: `index.ts` (root level)
-- Uses different streaming strategy (preloads entire song to memory)
-- Status: **Legacy**, not maintained
-- Notable difference: Loads entire MP3 into `ArrayBuffer` instead of streaming frames
-
-**Recommendation:** Use the Express implementation. Consider removing `index.ts`, `duration.ts`, and `song-list.ts` to avoid confusion.
+   - Returns 200 but does not call `engine.skipCurrentTrack()`. The engine supports skip (it's wired to track deletion); the admin endpoint just isn't connected yet.
 
 ---
 
@@ -466,7 +445,8 @@ docker logs -f lofi-radio
       "artist": "Artist Name",
       "album": "Album Name",
       "path": "./songs/track1.mp3",
-      "coverUrl": "https://cdn.example.com/covers/track-name.jpg",
+      "albumArtUrl": "https://cdn.example.com/covers/track-name.jpg",
+      "durationMs": 215000,
       "spotifyUrl": "https://open.spotify.com/track/abc123",
       "youtubeUrl": "https://www.youtube.com/watch?v=xyz789",
       "appleMusicUrl": "https://music.apple.com/us/song/track-name/123456"
@@ -532,7 +512,9 @@ if ('mediaSession' in navigator) {
     title: track.title,
     artist: track.artist,
     album: track.album || 'Lofi Radio',
-    artwork: [{ src: track.albumArtUrl, sizes: '512x512', type: 'image/jpeg' }]
+    artwork: track.albumArtUrl
+      ? [{ src: track.albumArtUrl, sizes: '512x512', type: 'image/jpeg' }]
+      : []
   });
   navigator.mediaSession.setActionHandler('play', play);
   navigator.mediaSession.setActionHandler('pause', pause);
