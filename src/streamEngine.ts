@@ -8,6 +8,12 @@ interface StreamSession {
 	connectedAt: number
 }
 
+// `stalledSince`: timestamp the socket last backpressured and hasn't drained
+// since (0 = healthy). A persistently stalled socket gets reaped.
+interface ClientMeta {
+	stalledSince: number
+}
+
 interface PreloadedTrack {
 	track: Track
 	reader: Mp3FrameReader
@@ -20,18 +26,26 @@ interface StreamTrackResult {
 }
 
 class StreamEngine {
-	private clients: Set<Response> = new Set()
+	private clients: Map<Response, ClientMeta> = new Map() // raw stream connection -> liveness
 	private sessions: Map<string, StreamSession> = new Map() // sessionId -> session
 	private sseClients: Set<Response> = new Set()
 	private isRunning: boolean = false
 	private skipRequested: boolean = false
 	private nowPlaying: NowPlaying | null = null
 
+	// Silently-dropped sockets never emit 'close', so reap them actively to avoid
+	// leaking buffers/FDs and inflating the listener count.
+	private reaperInterval: ReturnType<typeof setInterval> | null = null
+	private readonly REAPER_INTERVAL_MS = 15_000
+	private readonly STALL_TIMEOUT_MS = 45_000
+
 	// Burst-on-connect: ring buffer of the most recently broadcast frames. A new
 	// client joins at the razor-thin live edge, so its browser buffer hovers near
 	// empty and underruns on any jitter -> ~80ms audible "chops". Replaying this
 	// backlog on connect gives the browser an immediate playback cushion that
 	// absorbs jitter. ~128KB ≈ 3-4s at typical bitrates.
+	// Trade-off: a new listener starts ~burst behind the live edge, so sync
+	// *between* listeners is approximate (fine for radio; nobody A/Bs two devices).
 	private burstChunks: Buffer[] = []
 	private burstBytes = 0
 	private readonly BURST_LIMIT_BYTES = 128 * 1024
@@ -50,6 +64,10 @@ class StreamEngine {
 		// Prevent buffering in nginx/proxies
 		res.setHeader('X-Accel-Buffering', 'no')
 
+		// OS-level backstop for peers that vanished without a FIN; the reaper
+		// catches them sooner.
+		res.socket?.setKeepAlive(true, 30_000)
+
 		// Burst-on-connect: replay the recent frame backlog so the browser builds a
 		// playback cushion immediately instead of underrunning at the live edge.
 		// Written synchronously before joining the live set so it can't interleave
@@ -63,7 +81,7 @@ class StreamEngine {
 			}
 		}
 
-		this.clients.add(res)
+		this.clients.set(res, { stalledSince: 0 })
 
 		// Track by session ID if provided (for accurate listener count)
 		if (sessionId) {
@@ -109,6 +127,37 @@ class StreamEngine {
 				}
 			}
 		})
+	}
+
+	/** Start the periodic sweep that destroys dead/stalled stream connections. */
+	private startReaper(): void {
+		if (this.reaperInterval) return
+		this.reaperInterval = setInterval(() => this.reapStalledClients(), this.REAPER_INTERVAL_MS)
+	}
+
+	/**
+	 * Destroy connections that are dead or stalled past STALL_TIMEOUT_MS.
+	 * destroy() emits 'close', so the addClient cleanup (clients + sessions) runs.
+	 */
+	private reapStalledClients(): void {
+		const now = Date.now()
+		let reaped = 0
+		for (const [client, meta] of this.clients) {
+			const dead = client.writableEnded || client.destroyed
+			const stalledTooLong =
+				meta.stalledSince !== 0 && now - meta.stalledSince > this.STALL_TIMEOUT_MS
+			if (dead || stalledTooLong) {
+				client.destroy()
+				this.clients.delete(client)
+				reaped++
+			}
+		}
+		if (reaped > 0) {
+			console.log(
+				`[Stream] Reaped ${reaped} dead/stalled connection(s). ` +
+					`Unique listeners: ${this.sessions.size}, raw connections: ${this.clients.size}`,
+			)
+		}
 	}
 
 	/**
@@ -164,12 +213,22 @@ class StreamEngine {
 		// a warm cushion ready for the next client to connect.
 		this.appendToBurst(data)
 
-		for (const client of this.clients) {
+		for (const [client, meta] of this.clients) {
+			if (client.writableEnded) {
+				this.clients.delete(client)
+				continue
+			}
+			// Backpressured: skip rather than grow an unbounded buffer. Resumes on
+			// 'drain', or the reaper destroys it once the stall outlasts the timeout.
+			if (meta.stalledSince !== 0) {
+				continue
+			}
 			try {
-				if (!client.writableEnded) {
-					client.write(data)
-				} else {
-					this.clients.delete(client)
+				if (!client.write(data)) {
+					meta.stalledSince = Date.now()
+					client.once('drain', () => {
+						meta.stalledSince = 0
+					})
 				}
 			} catch (err) {
 				console.error('[Stream] Broadcast error:', err)
@@ -337,7 +396,7 @@ class StreamEngine {
 			if (frameCount % 1150 === 0) {
 				console.log(
 					`[Engine] Progress: ${Math.round((frameCount * 26) / 1000)}s, ` +
-						`${this.clients.size} listeners`,
+						`${this.sessions.size} listeners (${this.clients.size} raw connections)`,
 				)
 			}
 		}
@@ -378,6 +437,7 @@ class StreamEngine {
 		commitNextTrack: (track: Track) => Promise<Track | undefined>,
 	): Promise<void> {
 		this.isRunning = true
+		this.startReaper()
 		console.log('[Engine] Started')
 
 		let currentPreloaded: PreloadedTrack | null = null
@@ -427,6 +487,10 @@ class StreamEngine {
 
 	stop(): void {
 		this.isRunning = false
+		if (this.reaperInterval) {
+			clearInterval(this.reaperInterval)
+			this.reaperInterval = null
+		}
 		console.log('[Engine] Stopped')
 	}
 
