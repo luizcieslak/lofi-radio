@@ -30,14 +30,16 @@ The heart of the streaming system. Handles:
 - Multiple concurrent audio stream clients
 - SSE clients for metadata updates
 - Synchronized playback across all listeners
+- Reaping dead/stalled connections so zombie sockets don't accumulate
 
 **Key Methods:**
 
-- `addClient(res, sessionId?)` - Adds audio stream listener; `sessionId` (per-tab) dedupes reconnects and powers the unique-listener count
+- `addClient(res, sessionId?)` - Adds audio stream listener; `sessionId` (per-tab) dedupes reconnects and powers the unique-listener count. On connect it first replays a **burst-on-connect** backlog (`BURST_LIMIT_BYTES`, ~128 KB of recent frames) so the browser builds an immediate playback cushion instead of underrunning at the live edge
 - `addSSEClient(res)` - Adds metadata SSE listener
 - `start(peekNextTrack, commitNextTrack)` - Starts streaming loop using peek/commit so the next track is only advanced after the engine actually plays it
 - `skipCurrentTrack()` - Signals the current track to stop at the next frame (used when a playing track is deleted)
 - `streamTrack(current, peekNextTrack, commitNextTrack)` - Streams a single track; preloads next track ~13s in and commits the handoff at EOF (after re-verifying it still matches `peekNextTrack()`)
+- `reapStalledClients()` - Periodic sweep (every 15s, started by `start()`) that `destroy()`s connections that are dead or have been backpressured longer than 45s. Silently-dropped sockets (mobile sleep, NAT timeout, bot scans on the public `/stream`) never emit `close`, so without active reaping they pile up — wasting a `write()` per frame, leaking kernel send buffers + FDs, and inflating the connection count. `broadcast()` skips backpressured clients (tracked via a per-client `stalledSince`) instead of growing an unbounded buffer; TCP keepalive on each socket is the slower OS-level backstop
 
 #### 2. **Mp3FrameReader** ([src/mp3parser.ts](src/mp3parser.ts))
 
@@ -262,6 +264,7 @@ lofi-radio/
 - All connected clients receive the same frame data simultaneously
 - PreciseTimer ensures frames are sent at exact intervals matching the MP3 encoding
 - New clients join mid-stream and hear whatever is currently playing
+- **Burst-on-connect caveat:** a new client is first sent a ~128 KB backlog of recent frames so its buffer doesn't start empty (which caused audible underrun "chops"). Trade-off: that client starts ~3-4s *behind* the live edge, so sync *between* listeners is now approximate — "perfect sync" is really "perfect sync within the burst window." Acceptable for radio; nobody A/Bs two devices frame-accurately.
 
 ### Playlist Persistence
 
@@ -310,6 +313,7 @@ lofi-radio/
 
 - Frame-accurate MP3 streaming
 - Multi-client synchronization
+- **Burst-on-connect buffering** - new listeners get a ~3-4s frame backlog on connect so playback doesn't underrun at the live edge (fixes mid-song "chops")
 - Real-time metadata via SSE
 - Web player UI with playlist
 - Dynamic playlist from `songs/` folder
@@ -321,6 +325,7 @@ lofi-radio/
 - **Media Session API** - Track metadata on Bluetooth/lock screens (via AVRCP)
 - **Auto-reconnect** - Handles stream interruptions without manual refresh
 - **Platform URL editing** - Admin UI for Spotify/YouTube/Apple Music links
+- **Zombie connection reaping** - Backpressure tracking + a 15s reaper sweep + TCP keepalive destroy silently-dropped/stalled `/stream` sockets, so they don't leak buffers/FDs or inflate listener counts. The `Progress` log now reports unique sessions plus raw connections (`N listeners (M raw connections)`)
 
 ### 🎯 Design Philosophy
 
@@ -353,6 +358,12 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 
    - Returns 200 but does not call `engine.skipCurrentTrack()`. The engine supports skip (it's wired to track deletion); the admin endpoint just isn't connected yet.
 
+4. **Heterogeneous library → decode error at some track boundaries (all browsers)**
+
+   - When two adjacent tracks differ in sample rate (e.g. 44100 → 48000 Hz) or channel mode, the single browser decode session throws an unrecoverable `MediaError` at the boundary: Chrome `PIPELINE_ERROR_DECODE: Unsupported midstream configuration change!`, Firefox `NS_ERROR_DOM_MEDIA_DECODE_ERR`. The web player can only recover by reconnecting (a fresh decode session), so the listener hears a brief gap there. Verified via in-player logging on both browsers.
+   - **This is distinct from the mid-song underrun "chops"**, which were a separate problem (no buffer cushion) and are resolved by burst-on-connect.
+   - Durable fix tracked under *Audio format normalization* in the roadmap below.
+
 ---
 
 ## Next Steps / Improvement Roadmap
@@ -362,6 +373,7 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 - ✅ ~~Authentication & Authorization~~ - API key auth for admin routes
 - ✅ ~~Album artwork~~ - Tracks have `coverUrl` pointing to CDN-hosted images
 - ✅ ~~Platform links~~ - Spotify, YouTube, Apple Music URLs available per track
+- **Audio format normalization** - Fix cross-browser decode errors at track boundaries. **Confirmed in BOTH Chrome and Firefox** via in-player logging (earlier notes here wrongly claimed Chrome tolerated this — it does not, it just surfaced less often). Chrome reports `mediaError.code=3 — PIPELINE_ERROR_DECODE: Unsupported midstream configuration change! Sample Rate: 44100 vs 48000, Channels: 2 vs 2`; Firefox reports `NS_ERROR_DOM_MEDIA_DECODE_ERR` / "FFmpeg audio error". **Root cause:** the engine concatenates raw frames from every track into one continuous `audio/mpeg` stream, decoded as a *single* session. The library is heterogeneous (some tracks 44100 Hz, others 48000 Hz), so when the sample rate / channel mode changes at a track boundary the browser's already-initialized decoder throws a **hard, unrecoverable** `MediaError`. Playback can only resume via a fresh decode session, i.e. the player tears down and reopens `/stream` (`error` → reconnect), so the listener hears a brief gap at the offending boundary. Burst-on-connect makes that reconnect recover quickly but does **not** remove the gap. A secondary trigger: [src/mp3parser.ts](src/mp3parser.ts) accepts MPEG2/2.5 and Layer I/II frames but applies MPEG1-Layer-III tables and the `144*bitrate/samplerate` frame-size formula to all of them, so any ≤24 kHz (MPEG2/2.5) or Layer II track is mis-sized → corrupted frame boundaries. **Fix:** normalize the whole library to one canonical output format (e.g. 44100 Hz, stereo, MPEG1 Layer III) — a one-time batch re-encode of the offenders only (leave already-canonical files untouched to avoid needless lossy re-encode) **plus** a transcode-on-upload step in the upload path so new tracks can't reintroduce a mismatch. `ffmpeg` is already in the Docker image and `fluent-ffmpeg` is already a dependency (just not wired up yet). This fixes both triggers and keeps the frame-broadcast design intact. (Diagnostic: `ffprobe -show_entries stream=sample_rate,channels` over `songs/` to enumerate offenders.)
 - **Frame-precise persistence** - Resume mid-song (currently resumes at track start)
 - Enhanced Web UI - Queue management, drag-and-drop reordering
 - Volume Normalization - Analyze tracks and normalize loudness
