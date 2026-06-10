@@ -27,6 +27,15 @@ class StreamEngine {
 	private skipRequested: boolean = false
 	private nowPlaying: NowPlaying | null = null
 
+	// Burst-on-connect: ring buffer of the most recently broadcast frames. A new
+	// client joins at the razor-thin live edge, so its browser buffer hovers near
+	// empty and underruns on any jitter -> ~80ms audible "chops". Replaying this
+	// backlog on connect gives the browser an immediate playback cushion that
+	// absorbs jitter. ~128KB ≈ 3-4s at typical bitrates.
+	private burstChunks: Buffer[] = []
+	private burstBytes = 0
+	private readonly BURST_LIMIT_BYTES = 128 * 1024
+
 	/**
 	 * Add a new audio stream listener
 	 * @param sessionId - Unique session ID from client (for deduplication)
@@ -40,6 +49,19 @@ class StreamEngine {
 		res.setHeader('Access-Control-Allow-Origin', '*')
 		// Prevent buffering in nginx/proxies
 		res.setHeader('X-Accel-Buffering', 'no')
+
+		// Burst-on-connect: replay the recent frame backlog so the browser builds a
+		// playback cushion immediately instead of underrunning at the live edge.
+		// Written synchronously before joining the live set so it can't interleave
+		// with a live frame (addClient has no await, so broadcast() can't run mid-way).
+		if (this.burstBytes > 0) {
+			try {
+				res.write(Buffer.concat(this.burstChunks, this.burstBytes))
+			} catch (err) {
+				// Client may have already disconnected; the close handler cleans up.
+				console.error('[Stream] Burst write failed:', (err as Error).message)
+			}
+		}
 
 		this.clients.add(res)
 
@@ -121,9 +143,27 @@ class StreamEngine {
 	}
 
 	/**
+	 * Append a frame to the burst-on-connect ring buffer, trimming the oldest
+	 * frames once we exceed the byte cap. Frames are whole MP3 frames (the parser
+	 * allocates a fresh Buffer per frame), so the backlog is always frame-aligned.
+	 */
+	private appendToBurst(data: Buffer): void {
+		this.burstChunks.push(data)
+		this.burstBytes += data.length
+		while (this.burstBytes > this.BURST_LIMIT_BYTES && this.burstChunks.length > 1) {
+			const removed = this.burstChunks.shift()
+			if (removed) this.burstBytes -= removed.length
+		}
+	}
+
+	/**
 	 * Broadcast audio data to all connected stream clients
 	 */
 	private broadcast(data: Buffer): void {
+		// Record into the burst backlog first so even a zero-listener stream keeps
+		// a warm cushion ready for the next client to connect.
+		this.appendToBurst(data)
+
 		for (const client of this.clients) {
 			try {
 				if (!client.writableEnded) {
