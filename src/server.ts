@@ -392,6 +392,47 @@ app.get('/admin/songs', requireAuth, (req: Request, res: Response) => {
 })
 
 /**
+ * Backup endpoint — streams a tar.gz of the entire songs/ dir
+ * (MP3 files + .radio-state/ with state.json & tracks-meta.json).
+ * GET /admin/backup
+ */
+app.get('/admin/backup', requireAuth, (req: Request, res: Response) => {
+	res.setHeader('Content-Type', 'application/gzip')
+	res.setHeader('Content-Disposition', 'attachment; filename="lofi-radio-backup.tar.gz"')
+
+	// Stream tar.gz of songs/ straight to the response (no in-memory buffering).
+	// -C parents so the archive contains relative paths rooted at songs/.
+	const proc = Bun.spawn(['tar', '-czf', '-', '-C', path.dirname(SONGS_DIR), path.basename(SONGS_DIR)], {
+		stdout: 'pipe',
+		stderr: 'pipe',
+	})
+
+	const reader = proc.stdout.getReader()
+	const pump = async () => {
+		try {
+			while (true) {
+				const { done, value } = await reader.read()
+				if (done) break
+				if (!res.write(value)) {
+					// Respect backpressure
+					await new Promise<void>(resolve => res.once('drain', resolve))
+				}
+			}
+			res.end()
+		} catch (err) {
+			console.error('[Backup] Stream error:', err)
+			if (!res.headersSent) res.status(500).end()
+			else res.end()
+		}
+	}
+
+	// If the client disconnects, kill the tar process so it doesn't linger.
+	res.on('close', () => proc.kill())
+
+	pump()
+})
+
+/**
  * Rescan playlist
  * POST /admin/rescan
  * Headers: X-API-Key: <your-api-key>
@@ -446,22 +487,25 @@ app.use(express.static(path.join(__dirname, '../public')))
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Start the streaming engine in the background
-engine.start(async () => playlistManager.peekNextTrack(), async track => {
-	const committedTrack = playlistManager.commitNextTrack()
+engine.start(
+	async () => playlistManager.peekNextTrack(),
+	async track => {
+		const committedTrack = playlistManager.commitNextTrack()
 
-	if (!committedTrack) {
-		return undefined
-	}
+		if (!committedTrack) {
+			return undefined
+		}
 
-	if (committedTrack.id !== track.id) {
-		console.warn(
-			`[Server] Track commit mismatch. Expected ${track.title}, got ${committedTrack.title}. Using committed track.`,
-		)
-	}
+		if (committedTrack.id !== track.id) {
+			console.warn(
+				`[Server] Track commit mismatch. Expected ${track.title}, got ${committedTrack.title}. Using committed track.`,
+			)
+		}
 
-	playlistManager.notifyTrackChange(committedTrack)
-	return committedTrack
-})
+		playlistManager.notifyTrackChange(committedTrack)
+		return committedTrack
+	},
+)
 
 // Graceful shutdown
 const shutdown = () => {
