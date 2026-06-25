@@ -159,7 +159,6 @@ REST API and web server with endpoints:
 - `GET /admin/tracks/:filename/metadata` - Get track metadata
 - `PATCH /admin/tracks/:filename/metadata` - Update track metadata
 - `POST /admin/rescan` - Rescan songs directory
-- `POST /admin/skip` - Placeholder skip endpoint (does not yet wire through to `engine.skipCurrentTrack()`)
 
 #### 7. **Web Player** ([public/index.html](public/index.html))
 
@@ -194,7 +193,6 @@ lofi-radio/
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
 │   ├── playlistManager.ts  # Playlist management with persistence
 │   ├── metadataManager.ts  # Track metadata storage & ID3 extraction
-│   ├── playlist.ts         # Generated static playlist (legacy snapshot)
 │   └── types.ts            # TypeScript interfaces
 ├── songs/                  # MP3 files directory (auto-scanned)
 │   ├── *.mp3
@@ -354,11 +352,7 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
    - Resumes from start of saved track (not mid-song)
    - Frame-precise resume not yet implemented
 
-3. **`POST /admin/skip` is a stub**
-
-   - Returns 200 but does not call `engine.skipCurrentTrack()`. The engine supports skip (it's wired to track deletion); the admin endpoint just isn't connected yet.
-
-4. **Heterogeneous library → decode error at some track boundaries (all browsers)**
+3. **Heterogeneous library → decode error at some track boundaries (all browsers)**
 
    - When two adjacent tracks differ in sample rate (e.g. 44100 → 48000 Hz) or channel mode, the single browser decode session throws an unrecoverable `MediaError` at the boundary: Chrome `PIPELINE_ERROR_DECODE: Unsupported midstream configuration change!`, Firefox `NS_ERROR_DOM_MEDIA_DECODE_ERR`. The web player can only recover by reconnecting (a fresh decode session), so the listener hears a brief gap there. Verified via in-player logging on both browsers.
    - **This is distinct from the mid-song underrun "chops"**, which were a separate problem (no buffer cushion) and are resolved by burst-on-connect.

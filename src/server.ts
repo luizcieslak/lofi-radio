@@ -446,14 +446,6 @@ app.post('/admin/rescan', requireAuth, (req: Request, res: Response) => {
 	})
 })
 
-/**
- * Skip current track (placeholder - would need more implementation)
- */
-app.post('/admin/skip', requireAuth, (req: Request, res: Response) => {
-	// In a real implementation, you'd signal the engine to skip
-	res.json({ message: 'Skip requested' })
-})
-
 // ─────────────────────────────────────────────────────────────────────────────
 // PLAYLIST API
 // ─────────────────────────────────────────────────────────────────────────────
