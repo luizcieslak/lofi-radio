@@ -10,6 +10,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
+import { normalizeInPlace } from './audioNormalizer'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
@@ -172,6 +173,15 @@ app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Reques
 		return
 	}
 
+	// Normalize to the canonical format BEFORE extracting metadata, so heterogeneous
+	// sample rates can't cause a midstream decode error at track boundaries. On
+	// failure the original file is kept (upload is never lost). Metadata is read
+	// from the final (possibly re-encoded) file so duration stays accurate.
+	const norm = await normalizeInPlace(req.file.path)
+	if (norm.status === 'failed') {
+		console.warn(`[Upload] Normalization skipped for ${req.file.filename}: ${norm.error}`)
+	}
+
 	// Extract ID3 metadata and store
 	const metadata = await metadataManager.processUpload(req.file.filename, req.file.path)
 
@@ -182,6 +192,8 @@ app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Reques
 		success: true,
 		filename: req.file.filename,
 		size: req.file.size,
+		normalized: norm.status === 'normalized',
+		sourceSampleRate: norm.sourceSampleRate,
 		metadata: {
 			title: metadata.title,
 			artist: metadata.artist,
@@ -211,22 +223,29 @@ app.post(
 			return
 		}
 
-		// Extract metadata for all uploaded files
-		const results = await Promise.all(
-			files.map(async f => {
-				const metadata = await metadataManager.processUpload(f.filename, f.path)
-				return {
-					filename: f.filename,
-					size: f.size,
-					metadata: {
-						title: metadata.title,
-						artist: metadata.artist,
-						album: metadata.album,
-						extractedFromId3: metadata.extractedFromId3,
-					},
-				}
-			}),
-		)
+		// Normalize + extract metadata sequentially. Sequential (not Promise.all)
+		// so we never run many ffmpeg transcodes at once and starve the real-time
+		// busy-wait streaming engine. Normalization failures keep the original file.
+		const results = []
+		for (const f of files) {
+			const norm = await normalizeInPlace(f.path)
+			if (norm.status === 'failed') {
+				console.warn(`[Upload] Normalization skipped for ${f.filename}: ${norm.error}`)
+			}
+			const metadata = await metadataManager.processUpload(f.filename, f.path)
+			results.push({
+				filename: f.filename,
+				size: f.size,
+				normalized: norm.status === 'normalized',
+				sourceSampleRate: norm.sourceSampleRate,
+				metadata: {
+					title: metadata.title,
+					artist: metadata.artist,
+					album: metadata.album,
+					extractedFromId3: metadata.extractedFromId3,
+				},
+			})
+		}
 
 		// Add each track to playlist dynamically
 		for (const file of files) {
