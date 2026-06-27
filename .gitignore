@@ -39,8 +39,9 @@ src/playlist.ts
 # Songs directory (user-specific, includes .radio-state/ for persistence)
 songs/
 
-# Local output of the offline batch normalizer (lofi-radio-tools/normalize-tracks.ts)
-songs-normalized/
+# Local-only fallback dir: the pre-loudness-normalization originals, kept
+# during the volume-normalization migration.
+songs-backup/
 
 # Legacy state location (now in songs/.radio-state/)
 src/state/

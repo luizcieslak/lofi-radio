@@ -173,10 +173,11 @@ app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Reques
 		return
 	}
 
-	// Normalize to the canonical format BEFORE extracting metadata, so heterogeneous
-	// sample rates can't cause a midstream decode error at track boundaries. On
-	// failure the original file is kept (upload is never lost). Metadata is read
-	// from the final (possibly re-encoded) file so duration stays accurate.
+	// Normalize to the canonical format + loudness BEFORE extracting metadata, so
+	// heterogeneous sample rates can't cause a midstream decode error at track
+	// boundaries and tracks don't jump in volume. On failure the original file is
+	// kept (upload is never lost). Metadata is read from the final (possibly
+	// re-encoded) file so duration stays accurate.
 	const norm = await normalizeInPlace(req.file.path)
 	if (norm.status === 'failed') {
 		console.warn(`[Upload] Normalization skipped for ${req.file.filename}: ${norm.error}`)
@@ -194,6 +195,7 @@ app.post('/admin/upload', requireAuth, upload.single('song'), async (req: Reques
 		size: req.file.size,
 		normalized: norm.status === 'normalized',
 		sourceSampleRate: norm.sourceSampleRate,
+		sourceLoudnessLufs: norm.status === 'failed' ? null : norm.sourceLoudnessLufs,
 		metadata: {
 			title: metadata.title,
 			artist: metadata.artist,
@@ -238,6 +240,7 @@ app.post(
 				size: f.size,
 				normalized: norm.status === 'normalized',
 				sourceSampleRate: norm.sourceSampleRate,
+				sourceLoudnessLufs: norm.status === 'failed' ? null : norm.sourceLoudnessLufs,
 				metadata: {
 					title: metadata.title,
 					artist: metadata.artist,

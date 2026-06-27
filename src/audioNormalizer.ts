@@ -4,7 +4,8 @@
  *
  * Normalizes uploaded MP3s to one canonical output format so the engine can
  * concatenate frames from every track into a SINGLE browser decode session
- * without a midstream sample-rate change.
+ * without a midstream sample-rate change, AND so listeners don't hear a jump in
+ * perceived volume between tracks.
  *
  * Background: the stream is one continuous `audio/mpeg` body decoded by a single
  * decoder. A heterogeneous library (some tracks 44100 Hz, others 48000 Hz)
@@ -14,11 +15,17 @@
  * tears down and reconnects. Normalizing every track to 44100 Hz / stereo /
  * MPEG1 Layer III removes the boundary mismatch entirely.
  *
- * Canonical target (matches the offline batch normalizer in
- * ~/clawd/lofi-radio-tools): 44100 Hz, stereo, libmp3lame VBR V0 (-q:a 0).
- * We re-encode ONLY files whose sample rate differs from the target, so
- * already-canonical uploads are left bit-for-bit untouched (no needless
- * generational lossy loss).
+ * Two normalizations, applied in ONE re-encode (a single generational loss):
+ *  1. Format → 44100 Hz, stereo, libmp3lame VBR V0 (-q:a 0).
+ *  2. Loudness → EBU R128 to -14 LUFS / -1 dBTP / 11 LU (streaming standard),
+ *     via two-pass loudnorm (measure, then apply the measured values) for
+ *     accuracy, with a single-pass fallback if measurement fails.
+ *
+ * We re-encode only when a file is actually off-target — wrong sample rate OR
+ * loudness more than {@link LOUDNESS_TOLERANCE_LU} from target — so re-uploading
+ * an already-canonical, already-loud-matched track is left bit-for-bit untouched
+ * (no needless generational lossy loss). Matches the offline batch tools in
+ * ~/clawd/lofi-radio-tools (normalize-tracks.ts + normalize-volume.ts).
  */
 
 import { spawn } from 'node:child_process'
@@ -29,6 +36,17 @@ import * as path from 'node:path'
 export const TARGET_SAMPLE_RATE = 44100
 export const TARGET_CHANNELS = 2
 
+// Loudness target (EBU R128). -14 LUFS integrated is the Spotify/YouTube/Tidal
+// standard; -1 dBTP true-peak ceiling; 11 LU loudness range.
+export const TARGET_I = -14
+export const TARGET_TP = -1
+export const TARGET_LRA = 11
+
+// A file already within this many LU of target (and at the canonical rate) is
+// left untouched, so re-uploading an already-normalized track doesn't incur a
+// needless generational re-encode.
+export const LOUDNESS_TOLERANCE_LU = 1.0
+
 // Binaries are on PATH locally (linuxbrew) and in the prod Docker image
 // (apt-get install ffmpeg). Overridable for unusual environments.
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg'
@@ -37,26 +55,81 @@ const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe'
 /**
  * Outcome of {@link normalizeInPlace}. Modeled as a discriminated union so the
  * impossible combinations (e.g. re-encoded *and* errored) can't be represented.
- * - `unchanged`: file was already canonical; left untouched.
- * - `normalized`: file was re-encoded in place to the canonical format.
+ * - `unchanged`: file was already canonical (rate + loudness); left untouched.
+ * - `normalized`: file was re-encoded in place to the canonical format/loudness.
  * - `failed`: could not probe or re-encode; the ORIGINAL file is kept intact.
+ *
+ * `sourceLoudnessLufs` is the measured integrated loudness of the input, or
+ * null if it couldn't be measured.
  */
 export type NormalizeResult =
-	| { status: 'unchanged'; sourceSampleRate: number }
-	| { status: 'normalized'; sourceSampleRate: number }
+	| { status: 'unchanged'; sourceSampleRate: number; sourceLoudnessLufs: number | null }
+	| { status: 'normalized'; sourceSampleRate: number; sourceLoudnessLufs: number | null }
 	| { status: 'failed'; sourceSampleRate: number | null; error: string }
 
 /**
- * Pure: decide whether a probed sample rate requires re-encoding.
+ * Measured loudness stats from a loudnorm analysis pass, fed back into the
+ * apply pass for accurate two-pass normalization.
  */
-export function needsNormalization(sampleRate: number): boolean {
-	return sampleRate !== TARGET_SAMPLE_RATE
+export interface LoudnessStats {
+	input_i: string
+	input_tp: string
+	input_lra: string
+	input_thresh: string
+	target_offset: string
+}
+
+/**
+ * Pure: decide whether a file requires re-encoding. True when the sample rate
+ * is off-target OR the integrated loudness is more than the tolerance from the
+ * target. (Callers handle the "loudness unmeasurable" case separately.)
+ */
+export function needsNormalization(sampleRate: number, integratedLoudnessLufs: number): boolean {
+	if (sampleRate !== TARGET_SAMPLE_RATE) return true
+	return Math.abs(integratedLoudnessLufs - TARGET_I) > LOUDNESS_TOLERANCE_LU
+}
+
+/**
+ * Pure: build the loudnorm filter string. With `stats` it runs in two-pass mode
+ * (`measured_*` + `offset` + `linear=true`, which applies a single transparent
+ * linear gain when it can hit target without clipping). Without `stats` it runs
+ * single-pass/dynamic — the fallback when analysis failed.
+ */
+export function buildLoudnormFilter(stats: LoudnessStats | null): string {
+	const base = `loudnorm=I=${TARGET_I}:TP=${TARGET_TP}:LRA=${TARGET_LRA}`
+	if (stats === null) return base
+	return (
+		`${base}:measured_I=${stats.input_i}:measured_TP=${stats.input_tp}` +
+		`:measured_LRA=${stats.input_lra}:measured_thresh=${stats.input_thresh}` +
+		`:offset=${stats.target_offset}:linear=true`
+	)
+}
+
+/**
+ * Pure: build the ffmpeg arg vector for the loudnorm ANALYSIS pass (pass 1).
+ * Decodes audio through loudnorm with JSON output and writes nothing (null
+ * muxer) — runs faster than realtime.
+ */
+export function buildMeasureArgs(input: string): string[] {
+	return [
+		'-hide_banner',
+		'-i',
+		input,
+		'-map',
+		'0:a',
+		'-af',
+		`${buildLoudnormFilter(null)}:print_format=json`,
+		'-f',
+		'null',
+		'-',
+	]
 }
 
 /**
  * Pure: build the ffmpeg argument vector that transcodes `input` to the
- * canonical format at `output`.
+ * canonical format + loudness at `output`.
  *
+ * - `-af loudnorm…` normalizes loudness (two-pass when `stats` is provided).
  * - `-map 0:a` keeps the audio; `-map 0:v?` keeps an embedded cover if present
  *   (the `?` makes it optional so coverless files don't fail) and `-c:v copy`
  *   passes it through without re-encoding.
@@ -64,7 +137,7 @@ export function needsNormalization(sampleRate: number): boolean {
  * - libmp3lame `-q:a 0` is VBR V0 (~245 kbps), transparent for these lossy
  *   ~160-283 kbps sources without wasteful bloat.
  */
-export function buildNormalizeArgs(input: string, output: string): string[] {
+export function buildNormalizeArgs(input: string, output: string, stats: LoudnessStats | null): string[] {
 	return [
 		'-i',
 		input,
@@ -74,6 +147,8 @@ export function buildNormalizeArgs(input: string, output: string): string[] {
 		'0:v?',
 		'-c:v',
 		'copy',
+		'-af',
+		buildLoudnormFilter(stats),
 		'-ar',
 		String(TARGET_SAMPLE_RATE),
 		'-ac',
@@ -144,9 +219,41 @@ export async function probeSampleRate(filepath: string): Promise<number | null> 
 }
 
 /**
- * Normalize a file in place if its sample rate differs from the canonical
- * target. No-op (returns `normalized: false`) when the file is already
- * canonical or can't be probed.
+ * Run the loudnorm analysis pass and parse its JSON block (printed to stderr).
+ * Returns null if the file can't be analyzed or the JSON is missing/incomplete.
+ */
+export async function measureLoudness(filepath: string): Promise<LoudnessStats | null> {
+	try {
+		const { stderr } = await run(FFMPEG, buildMeasureArgs(filepath))
+		const match = stderr.match(/\{[\s\S]*\}/)
+		if (!match) return null
+		const parsed = JSON.parse(match[0]) as Partial<LoudnessStats>
+		if (
+			parsed.input_i === undefined ||
+			parsed.input_tp === undefined ||
+			parsed.input_lra === undefined ||
+			parsed.input_thresh === undefined ||
+			parsed.target_offset === undefined
+		) {
+			return null
+		}
+		return {
+			input_i: parsed.input_i,
+			input_tp: parsed.input_tp,
+			input_lra: parsed.input_lra,
+			input_thresh: parsed.input_thresh,
+			target_offset: parsed.target_offset,
+		}
+	} catch {
+		return null
+	}
+}
+
+/**
+ * Normalize a file in place to the canonical format AND loudness. No-op
+ * (`unchanged`) when the file is already at the target sample rate and within
+ * the loudness tolerance, or when the rate is already canonical but loudness
+ * can't be measured (we don't risk a blind re-encode for an unknown gain).
  *
  * Safety: the re-encode goes to a temp file in the SAME directory (so the
  * final `rename` stays on one filesystem — no EXDEV) and only replaces the
@@ -160,8 +267,21 @@ export async function normalizeInPlace(filepath: string): Promise<NormalizeResul
 		return { status: 'failed', sourceSampleRate: null, error: 'Could not probe sample rate' }
 	}
 
-	if (!needsNormalization(sourceSampleRate)) {
-		return { status: 'unchanged', sourceSampleRate }
+	// Measure loudness for the two-pass apply (and to decide if a re-encode is
+	// even needed). May be null if analysis fails — handled below.
+	const stats = await measureLoudness(filepath)
+	const measuredI = stats ? Number.parseFloat(stats.input_i) : Number.NaN
+	const loudnessKnown = Number.isFinite(measuredI)
+	const sourceLoudnessLufs = loudnessKnown ? measuredI : null
+
+	const rateOk = sourceSampleRate === TARGET_SAMPLE_RATE
+	// Rate is fine but we couldn't measure loudness: leave it alone rather than
+	// blindly re-encode an unknown gain (and lose a generation for nothing).
+	if (rateOk && !loudnessKnown) {
+		return { status: 'unchanged', sourceSampleRate, sourceLoudnessLufs }
+	}
+	if (!needsNormalization(sourceSampleRate, measuredI)) {
+		return { status: 'unchanged', sourceSampleRate, sourceLoudnessLufs }
 	}
 
 	// Unique per call (randomUUID) so concurrent uploads of the same filename
@@ -171,7 +291,7 @@ export async function normalizeInPlace(filepath: string): Promise<NormalizeResul
 	const tmp = path.join(dir, `.normalizing-${path.basename(filepath)}.${randomUUID()}.tmp.mp3`)
 
 	try {
-		const { code, stderr } = await run(FFMPEG, buildNormalizeArgs(filepath, tmp))
+		const { code, stderr } = await run(FFMPEG, buildNormalizeArgs(filepath, tmp, stats))
 		if (code !== 0) {
 			throw new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`)
 		}
@@ -182,7 +302,7 @@ export async function normalizeInPlace(filepath: string): Promise<NormalizeResul
 		}
 
 		fs.renameSync(tmp, filepath)
-		return { status: 'normalized', sourceSampleRate }
+		return { status: 'normalized', sourceSampleRate, sourceLoudnessLufs }
 	} catch (err) {
 		// Keep the original file; clean up the partial temp.
 		try {
