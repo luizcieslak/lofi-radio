@@ -34,7 +34,7 @@ The heart of the streaming system. Handles:
 
 **Key Methods:**
 
-- `addClient(res, sessionId?)` - Adds audio stream listener; `sessionId` (per-tab) dedupes reconnects and powers the unique-listener count. On connect it first replays a **burst-on-connect** backlog (`BURST_LIMIT_BYTES`, ~128 KB of recent frames) so the browser builds an immediate playback cushion instead of underrunning at the live edge
+- `addClient(res, sessionId?, heartbeatEnabled?)` - Adds audio stream listener; `sessionId` dedupes reconnects and powers the unique-listener count. Browser clients pass `hb=1` on `/stream` and refresh the session through `/api/listeners/heartbeat`; heartbeat-enabled sessions expire after 150s without refresh so zombie listeners self-clean. On connect it first replays a **burst-on-connect** backlog (`BURST_LIMIT_BYTES`, ~128 KB of recent frames) so the browser builds an immediate playback cushion instead of underrunning at the live edge
 - `addSSEClient(res)` - Adds metadata SSE listener
 - `start(peekNextTrack, commitNextTrack)` - Starts streaming loop using peek/commit so the next track is only advanced after the engine actually plays it
 - `skipCurrentTrack()` - Signals the current track to stop at the next frame (used when a playing track is deleted)
@@ -173,7 +173,7 @@ Modern, responsive web UI featuring:
 - **Media Session API** - Track info shows on Bluetooth devices, car head units, lock screens
 - **Auto-reconnect** - Robust reconnection on stream drops (deploys, network issues)
 - **Mobile watchdog** - Detects silent stream death (e.g. background tabs on iOS) and forces a reconnect
-- **Per-tab session ID** - Each browser tab gets a sessionStorage-backed ID so the server can count unique listeners and close stale reconnects
+- **Per-page session ID + heartbeat** - Each browser page gets a runtime ID so the server can count unique listeners, close stale reconnects, and expire zombie listeners after missed heartbeats
 
 **Admin Panel** (click 🔐 button):
 - API key authentication (stored in localStorage)
