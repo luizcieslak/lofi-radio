@@ -779,25 +779,49 @@
     let tracks = [];
     let currentIndex = 0;
 
-    // Generate session ID for listener tracking (per-tab, clears on close)
-    function getSessionId() {
-      let sid = sessionStorage.getItem('radio_session_id');
-      if (!sid) {
-        sid = crypto.randomUUID();
-        sessionStorage.setItem('radio_session_id', sid);
-      }
-      return sid;
+    // Per-page-lifetime id so duplicated tabs cannot inherit the same sessionStorage
+    // value and fight over one listener slot.
+    const sessionId = crypto.randomUUID();
+    const heartbeatIntervalMs = 60000;
+    let heartbeatTimer = null;
+
+    function listenerUrl(action) {
+      return `/api/listeners/${action}?sid=${encodeURIComponent(sessionId)}`;
     }
-    const sessionId = getSessionId();
+
+    function sendHeartbeat() {
+      fetch(listenerUrl('heartbeat'), { method: 'POST', keepalive: true }).catch(() => {});
+    }
+
+    function sendEnd() {
+      const url = listenerUrl('end');
+      if (navigator.sendBeacon?.(url)) return;
+      fetch(url, { method: 'POST', keepalive: true }).catch(() => {});
+    }
+
+    function startHeartbeat() {
+      if (heartbeatTimer) return;
+      sendHeartbeat();
+      heartbeatTimer = setInterval(sendHeartbeat, heartbeatIntervalMs);
+    }
+
+    function stopHeartbeat(notifyServer) {
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (notifyServer) sendEnd();
+    }
 
     // Audio Controls
     function play() {
       manualPause = false;
       clearReconnectTimer();
-      audio.src = `/stream?sid=${sessionId}&t=${Date.now()}`;
+      audio.src = `/stream?sid=${sessionId}&hb=1&t=${Date.now()}`;
       audio.play()
         .then(() => {
           isPlaying = true;
+          startHeartbeat();
           playBtn.textContent = '⏸';
           statusEl.textContent = 'LIVE';
           statusEl.className = 'status live';
@@ -813,6 +837,7 @@
       manualPause = true;
       clearReconnectTimer();
       clearStalledTimer();
+      stopHeartbeat(true);
       audio.pause();
       audio.src = '';
       isPlaying = false;
@@ -872,7 +897,7 @@
         reconnectTimer = null;
         if (!isPlaying) return;
         console.log(`[Reconnect] Attempt ${reconnectAttempts} after ${reason}`);
-        audio.src = `/stream?sid=${sessionId}&t=${Date.now()}`;
+        audio.src = `/stream?sid=${sessionId}&hb=1&t=${Date.now()}`;
         audio.play().catch(() => reconnect('play-failed'));
       }, delay);
     }
@@ -965,6 +990,17 @@
 
     document.addEventListener('visibilitychange', () => {
       console.log(`[Visibility] ${document.visibilityState} at ${new Date().toISOString()}`);
+    });
+
+    window.addEventListener('pagehide', () => {
+      if (isPlaying) stopHeartbeat(true);
+    });
+
+    window.addEventListener('pageshow', () => {
+      if (!isPlaying) return;
+      audio.src = `/stream?sid=${sessionId}&hb=1&t=${Date.now()}`;
+      audio.play().catch(() => reconnect('pageshow-play-failed'));
+      startHeartbeat();
     });
 
     // Media Session API - handle car/lock screen controls

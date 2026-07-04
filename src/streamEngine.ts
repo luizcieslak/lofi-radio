@@ -6,12 +6,15 @@ import type { NowPlaying, Track } from './types'
 interface StreamSession {
 	res: Response
 	connectedAt: number
+	lastSeenAt: number
+	heartbeatEnabled: boolean
 }
 
 // `stalledSince`: timestamp the socket last backpressured and hasn't drained
 // since (0 = healthy). A persistently stalled socket gets reaped.
 interface ClientMeta {
 	stalledSince: number
+	sessionId: string | null
 }
 
 interface PreloadedTrack {
@@ -38,6 +41,7 @@ class StreamEngine {
 	private reaperInterval: ReturnType<typeof setInterval> | null = null
 	private readonly REAPER_INTERVAL_MS = 15_000
 	private readonly STALL_TIMEOUT_MS = 45_000
+	private readonly HEARTBEAT_TTL_MS = 150_000
 
 	// Burst-on-connect: ring buffer of the most recently broadcast frames. A new
 	// client joins at the razor-thin live edge, so its browser buffer hovers near
@@ -54,7 +58,10 @@ class StreamEngine {
 	 * Add a new audio stream listener
 	 * @param sessionId - Unique session ID from client (for deduplication)
 	 */
-	addClient(res: Response, sessionId?: string): void {
+	addClient(res: Response, sessionId?: string, heartbeatEnabled = false): void {
+		const validSessionId = sessionId && this.isValidSessionId(sessionId) ? sessionId : null
+		const now = Date.now()
+
 		// Set headers for streaming audio
 		res.setHeader('Content-Type', 'audio/mpeg')
 		res.setHeader('Cache-Control', 'no-cache, no-store')
@@ -81,11 +88,11 @@ class StreamEngine {
 			}
 		}
 
-		this.clients.set(res, { stalledSince: 0 })
+		this.clients.set(res, { stalledSince: 0, sessionId: validSessionId })
 
 		// Track by session ID if provided (for accurate listener count)
-		if (sessionId) {
-			const existing = this.sessions.get(sessionId)
+		if (validSessionId) {
+			const existing = this.sessions.get(validSessionId)
 			if (existing) {
 				// Same session reconnecting - close old connection
 				try {
@@ -95,9 +102,14 @@ class StreamEngine {
 				}
 				this.clients.delete(existing.res)
 			}
-			this.sessions.set(sessionId, { res, connectedAt: Date.now() })
+			this.sessions.set(validSessionId, {
+				res,
+				connectedAt: existing?.connectedAt ?? now,
+				lastSeenAt: now,
+				heartbeatEnabled: heartbeatEnabled || existing?.heartbeatEnabled || false,
+			})
 			console.log(
-				`[Stream] Session ${sessionId.slice(0, 8)}... connected. Unique listeners: ${this.sessions.size}`,
+				`[Stream] Session ${validSessionId.slice(0, 8)}... connected. Unique listeners: ${this.getListenerCount()}`,
 			)
 		} else {
 			console.log(`[Stream] Anonymous client connected. Total connections: ${this.clients.size}`)
@@ -106,12 +118,12 @@ class StreamEngine {
 		// Remove client when they disconnect
 		res.on('close', () => {
 			this.clients.delete(res)
-			if (sessionId) {
-				const session = this.sessions.get(sessionId)
+			if (validSessionId) {
+				const session = this.sessions.get(validSessionId)
 				if (session?.res === res) {
-					this.sessions.delete(sessionId)
+					this.sessions.delete(validSessionId)
 					console.log(
-						`[Stream] Session ${sessionId.slice(0, 8)}... disconnected. Unique listeners: ${this.sessions.size}`,
+						`[Stream] Session ${validSessionId.slice(0, 8)}... disconnected. Unique listeners: ${this.getListenerCount()}`,
 					)
 				}
 			}
@@ -120,13 +132,39 @@ class StreamEngine {
 		res.on('error', err => {
 			console.error('[Stream] Client error:', err.message)
 			this.clients.delete(res)
-			if (sessionId) {
-				const session = this.sessions.get(sessionId)
+			if (validSessionId) {
+				const session = this.sessions.get(validSessionId)
 				if (session?.res === res) {
-					this.sessions.delete(sessionId)
+					this.sessions.delete(validSessionId)
 				}
 			}
 		})
+	}
+
+	refreshSession(sessionId: string): boolean {
+		if (!this.isValidSessionId(sessionId)) return false
+
+		const session = this.sessions.get(sessionId)
+		if (!session?.heartbeatEnabled) return false
+
+		session.lastSeenAt = Date.now()
+		return true
+	}
+
+	endSession(sessionId: string): boolean {
+		if (!this.isValidSessionId(sessionId)) return false
+
+		const session = this.sessions.get(sessionId)
+		if (!session?.heartbeatEnabled) return false
+
+		this.sessions.delete(sessionId)
+		this.clients.delete(session.res)
+		session.res.destroy()
+		return true
+	}
+
+	private isValidSessionId(sessionId: string): boolean {
+		return /^[A-Za-z0-9_-]{8,128}$/.test(sessionId)
 	}
 
 	/** Start the periodic sweep that destroys dead/stalled stream connections. */
@@ -144,20 +182,45 @@ class StreamEngine {
 		let reaped = 0
 		for (const [client, meta] of this.clients) {
 			const dead = client.writableEnded || client.destroyed
-			const stalledTooLong =
-				meta.stalledSince !== 0 && now - meta.stalledSince > this.STALL_TIMEOUT_MS
+			const stalledTooLong = meta.stalledSince !== 0 && now - meta.stalledSince > this.STALL_TIMEOUT_MS
 			if (dead || stalledTooLong) {
 				client.destroy()
 				this.clients.delete(client)
+				if (meta.sessionId) {
+					const session = this.sessions.get(meta.sessionId)
+					if (session?.res === client) {
+						this.sessions.delete(meta.sessionId)
+					}
+				}
 				reaped++
 			}
 		}
+		const expired = this.expireHeartbeatSessions(now)
 		if (reaped > 0) {
 			console.log(
 				`[Stream] Reaped ${reaped} dead/stalled connection(s). ` +
-					`Unique listeners: ${this.sessions.size}, raw connections: ${this.clients.size}`,
+					`Unique listeners: ${this.getListenerCount()}, raw connections: ${this.clients.size}`,
 			)
 		}
+		if (expired > 0) {
+			console.log(
+				`[Stream] Expired ${expired} stale heartbeat session(s). ` +
+					`Unique listeners: ${this.getListenerCount()}, raw connections: ${this.clients.size}`,
+			)
+		}
+	}
+
+	private expireHeartbeatSessions(now: number): number {
+		let expired = 0
+		for (const [sessionId, session] of this.sessions) {
+			if (!session.heartbeatEnabled || now - session.lastSeenAt <= this.HEARTBEAT_TTL_MS) continue
+
+			this.sessions.delete(sessionId)
+			this.clients.delete(session.res)
+			session.res.destroy()
+			expired++
+		}
+		return expired
 	}
 
 	/**
@@ -297,9 +360,7 @@ class StreamEngine {
 
 		const preloaded = this.prepareTrack(nextTrack)
 		if (preloaded) {
-			console.log(
-				`[Engine] Preloaded next track in ${Date.now() - startedAt}ms: ${nextTrack.title}`,
-			)
+			console.log(`[Engine] Preloaded next track in ${Date.now() - startedAt}ms: ${nextTrack.title}`)
 		}
 		return preloaded
 	}
@@ -362,9 +423,7 @@ class StreamEngine {
 			// → broadcast first frame", which is sub-millisecond.
 			if (!nextFrame && !committed) {
 				boundaryMarkedAt = Date.now()
-				console.log(
-					`[Engine] Boundary reached for ${current.track.title} after ${frameCount} frames`,
-				)
+				console.log(`[Engine] Boundary reached for ${current.track.title} after ${frameCount} frames`)
 
 				if (nextPreloaded) {
 					const fresh = await peekNextTrack()
@@ -372,9 +431,7 @@ class StreamEngine {
 						const result = await commitNextTrack(nextPreloaded.track)
 						if (result) {
 							committed = true
-							console.log(
-								`[Engine] Committed handoff in ${Date.now() - boundaryMarkedAt}ms: ${result.title}`,
-							)
+							console.log(`[Engine] Committed handoff in ${Date.now() - boundaryMarkedAt}ms: ${result.title}`)
 						} else {
 							console.warn('[Engine] commitNextTrack returned undefined during handoff')
 							this.closePreloadedTrack(nextPreloaded)
@@ -510,11 +567,18 @@ class StreamEngine {
 	getStatus() {
 		return {
 			isRunning: this.isRunning,
-			// Use unique session count if available, fallback to raw client count
-			listenerCount: this.sessions.size > 0 ? this.sessions.size : this.clients.size,
+			listenerCount: this.getListenerCount(),
 			sseClientCount: this.sseClients.size,
 			nowPlaying: this.nowPlaying,
 		}
+	}
+
+	private getListenerCount(): number {
+		let anonymousCount = 0
+		for (const meta of this.clients.values()) {
+			if (!meta.sessionId) anonymousCount++
+		}
+		return this.sessions.size + anonymousCount
 	}
 }
 

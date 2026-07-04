@@ -119,6 +119,10 @@ const requireAuth = (req: Request, res: Response, next: NextFunction) => {
 	next()
 }
 
+const getQueryParam = (value: unknown): string | undefined => {
+	return typeof value === 'string' ? value : undefined
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC ROUTES
 // ─────────────────────────────────────────────────────────────────────────────
@@ -129,8 +133,9 @@ const requireAuth = (req: Request, res: Response, next: NextFunction) => {
  */
 app.get('/stream', (req: Request, res: Response) => {
 	// Session ID for unique listener tracking (sent by client)
-	const sessionId = req.query.sid as string | undefined
-	engine.addClient(res, sessionId)
+	const sessionId = getQueryParam(req.query.sid)
+	const heartbeatEnabled = getQueryParam(req.query.hb) === '1'
+	engine.addClient(res, sessionId, heartbeatEnabled)
 	// Note: we don't call res.end() - the response stays open
 })
 
@@ -155,6 +160,25 @@ app.get('/now-playing/events', (req: Request, res: Response) => {
  */
 app.get('/status', (req: Request, res: Response) => {
 	res.json(engine.getStatus())
+})
+
+app.post('/api/listeners/heartbeat', (req: Request, res: Response) => {
+	const sessionId = getQueryParam(req.query.sid)
+	if (!sessionId) {
+		res.sendStatus(204)
+		return
+	}
+
+	engine.refreshSession(sessionId)
+	res.sendStatus(204)
+})
+
+app.post('/api/listeners/end', (req: Request, res: Response) => {
+	const sessionId = getQueryParam(req.query.sid)
+	if (sessionId) {
+		engine.endSession(sessionId)
+	}
+	res.sendStatus(204)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
