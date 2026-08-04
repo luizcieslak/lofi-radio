@@ -793,6 +793,21 @@
       fetch(listenerUrl('heartbeat'), { method: 'POST', keepalive: true }).catch(() => {});
     }
 
+    // The metadata/playlist SSE streams are open for the whole page lifetime (even
+    // before play), so they need their own heartbeat, separate from the play-gated
+    // listener heartbeat. Without it, a silently-dropped SSE socket leaks on the
+    // server for ~11 min (OS keepalive). The server expires SSE sessions whose
+    // heartbeat lapses past its TTL.
+    let sseHeartbeatTimer = null;
+    function sendSSEHeartbeat() {
+      fetch(`/api/sse/heartbeat?sid=${encodeURIComponent(sessionId)}`, { method: 'POST', keepalive: true }).catch(() => {});
+    }
+    function startSSEHeartbeat() {
+      if (sseHeartbeatTimer) return;
+      sendSSEHeartbeat();
+      sseHeartbeatTimer = setInterval(sendSSEHeartbeat, heartbeatIntervalMs);
+    }
+
     function sendEnd() {
       const url = listenerUrl('end');
       if (navigator.sendBeacon?.(url)) return;
@@ -1080,7 +1095,8 @@
 
     // SSE for playlist updates
     function connectPlaylistSSE() {
-      const events = new EventSource('/api/playlist/events');
+      const events = new EventSource(`/api/playlist/events?sid=${encodeURIComponent(sessionId)}`);
+      startSSEHeartbeat();
       events.onmessage = e => {
         try {
           const data = JSON.parse(e.data);
@@ -1101,7 +1117,8 @@
 
     // SSE for now-playing updates
     function connectNowPlayingSSE() {
-      const events = new EventSource('/now-playing/events');
+      const events = new EventSource(`/now-playing/events?sid=${encodeURIComponent(sessionId)}`);
+      startSSEHeartbeat();
       events.onmessage = e => {
         try {
           const data = JSON.parse(e.data);

@@ -17,6 +17,87 @@ interface ClientMeta {
 	sessionId: string | null
 }
 
+// SSE clients get the same backpressure/liveness tracking as audio clients so
+// the reaper can collect silently-dropped sockets (which never emit 'close').
+//
+// `lastSeenAt` powers the real backstop: a silently-dropped SSE socket (peer
+// vanished with no FIN) never trips `stalledSince` because SSE writes are tiny
+// and infrequent, and OS keepalive takes ~11 min to notice. So the client sends
+// a periodic app-level heartbeat that bumps `lastSeenAt`; the reaper expires any
+// SSE session that hasn't been refreshed within SSE_HEARTBEAT_TTL_MS. Sessions
+// with no id (`sseSessionId === null`, e.g. a raw curl) skip TTL expiry and rely
+// on the stall/dead checks only.
+export interface SSEClientMeta {
+	stalledSince: number
+	heartbeat: ReturnType<typeof setInterval>
+	sseSessionId: string | null
+	lastSeenAt: number
+}
+
+/**
+ * A stream/SSE connection is reapable when it's dead (ended/destroyed) or has
+ * been backpressured (unwritable) longer than the stall timeout. Shared by the
+ * audio and SSE sweeps (and PlaylistManager's SSE sweep) so the liveness
+ * predicate stays in one place.
+ */
+export function isReapable(
+	res: Response,
+	{ stalledSince, now, stallTimeoutMs }: { stalledSince: number; now: number; stallTimeoutMs: number },
+): boolean {
+	const dead = res.writableEnded || res.destroyed
+	const stalledTooLong = stalledSince !== 0 && now - stalledSince > stallTimeoutMs
+	return dead || stalledTooLong
+}
+
+/** Session ids are client-supplied and used in logs/map keys, so validate shape. */
+export function isValidSessionId(sessionId: string): boolean {
+	return /^[A-Za-z0-9_-]{8,128}$/.test(sessionId)
+}
+
+/**
+ * An SSE client is reapable when it's dead/stalled (isReapable) OR — the real
+ * backstop — it has a session id and hasn't heartbeated within the TTL. The
+ * heartbeat check is what actually collects silently-dropped SSE sockets, since
+ * their tiny/infrequent writes never trip the stall check and OS keepalive is
+ * ~11 min. Id-less clients (raw curl) fall back to the stall/dead checks only.
+ * Shared by the StreamEngine and PlaylistManager SSE sweeps.
+ */
+export function isSSEReapable(
+	res: Response,
+	meta: SSEClientMeta,
+	{ now, stallTimeoutMs, heartbeatTtlMs }: { now: number; stallTimeoutMs: number; heartbeatTtlMs: number },
+): boolean {
+	if (isReapable(res, { stalledSince: meta.stalledSince, now, stallTimeoutMs })) return true
+	return meta.sseSessionId !== null && now - meta.lastSeenAt > heartbeatTtlMs
+}
+
+/**
+ * Write a payload to one SSE client with backpressure tracking: skip dead/stalled
+ * sockets, and on a full send-buffer mark the client stalled + clear it on 'drain'
+ * (a socket that never drains is collected by a reaper). Shared by StreamEngine
+ * and PlaylistManager. Returns false if the write was skipped.
+ */
+export function writeSSEClient(
+	client: Response,
+	meta: SSEClientMeta,
+	payload: string,
+	logPrefix: string,
+): boolean {
+	if (client.writableEnded || meta.stalledSince !== 0) return false
+	try {
+		if (!client.write(payload)) {
+			meta.stalledSince = Date.now()
+			client.once('drain', () => {
+				meta.stalledSince = 0
+			})
+		}
+		return true
+	} catch (err) {
+		console.error(`${logPrefix} Write error:`, err instanceof Error ? err.message : String(err))
+		return false
+	}
+}
+
 interface PreloadedTrack {
 	track: Track
 	reader: Mp3FrameReader
@@ -31,7 +112,7 @@ interface StreamTrackResult {
 class StreamEngine {
 	private clients: Map<Response, ClientMeta> = new Map() // raw stream connection -> liveness
 	private sessions: Map<string, StreamSession> = new Map() // sessionId -> session
-	private sseClients: Set<Response> = new Set()
+	private sseClients: Map<Response, SSEClientMeta> = new Map()
 	private isRunning: boolean = false
 	private skipRequested: boolean = false
 	private nowPlaying: NowPlaying | null = null
@@ -42,6 +123,9 @@ class StreamEngine {
 	private readonly REAPER_INTERVAL_MS = 15_000
 	private readonly STALL_TIMEOUT_MS = 45_000
 	private readonly HEARTBEAT_TTL_MS = 150_000
+	// SSE clients heartbeat on their own cadence (independent of the audio stream
+	// session, since the metadata SSE is open even before the user presses play).
+	private readonly SSE_HEARTBEAT_TTL_MS = 150_000
 
 	// Burst-on-connect: ring buffer of the most recently broadcast frames. A new
 	// client joins at the razor-thin live edge, so its browser buffer hovers near
@@ -164,7 +248,7 @@ class StreamEngine {
 	}
 
 	private isValidSessionId(sessionId: string): boolean {
-		return /^[A-Za-z0-9_-]{8,128}$/.test(sessionId)
+		return isValidSessionId(sessionId)
 	}
 
 	/** Start the periodic sweep that destroys dead/stalled stream connections. */
@@ -181,9 +265,9 @@ class StreamEngine {
 		const now = Date.now()
 		let reaped = 0
 		for (const [client, meta] of this.clients) {
-			const dead = client.writableEnded || client.destroyed
-			const stalledTooLong = meta.stalledSince !== 0 && now - meta.stalledSince > this.STALL_TIMEOUT_MS
-			if (dead || stalledTooLong) {
+			if (
+				isReapable(client, { stalledSince: meta.stalledSince, now, stallTimeoutMs: this.STALL_TIMEOUT_MS })
+			) {
 				client.destroy()
 				this.clients.delete(client)
 				if (meta.sessionId) {
@@ -195,6 +279,7 @@ class StreamEngine {
 				reaped++
 			}
 		}
+		const sseReaped = this.reapStalledSSEClients(now)
 		const expired = this.expireHeartbeatSessions(now)
 		if (reaped > 0) {
 			console.log(
@@ -202,12 +287,55 @@ class StreamEngine {
 					`Unique listeners: ${this.getListenerCount()}, raw connections: ${this.clients.size}`,
 			)
 		}
+		if (sseReaped > 0) {
+			console.log(`[SSE] Reaped ${sseReaped} dead/stalled connection(s). Total: ${this.sseClients.size}`)
+		}
 		if (expired > 0) {
 			console.log(
 				`[Stream] Expired ${expired} stale heartbeat session(s). ` +
 					`Unique listeners: ${this.getListenerCount()}, raw connections: ${this.clients.size}`,
 			)
 		}
+	}
+
+	/**
+	 * Destroy SSE connections that are dead, stalled past STALL_TIMEOUT_MS, or
+	 * (for sessions with an id) haven't heartbeated within SSE_HEARTBEAT_TTL_MS.
+	 * destroy() emits 'close', so the addSSEClient cleanup (clears the heartbeat
+	 * interval + deletes from the map) runs. The heartbeat-TTL check is the real
+	 * backstop: silently-dropped SSE sockets never trip stall/dead (writes are
+	 * tiny + OS keepalive is ~11 min), but a missed client heartbeat expires them.
+	 */
+	private reapStalledSSEClients(now: number): number {
+		let reaped = 0
+		for (const [client, meta] of this.sseClients) {
+			if (
+				isSSEReapable(client, meta, {
+					now,
+					stallTimeoutMs: this.STALL_TIMEOUT_MS,
+					heartbeatTtlMs: this.SSE_HEARTBEAT_TTL_MS,
+				})
+			) {
+				client.destroy()
+				this.sseClients.delete(client)
+				reaped++
+			}
+		}
+		return reaped
+	}
+
+	/** Refresh an SSE session's liveness (called by the client heartbeat). */
+	refreshSSESession(sessionId: string): boolean {
+		if (!this.isValidSessionId(sessionId)) return false
+		let refreshed = false
+		const now = Date.now()
+		for (const meta of this.sseClients.values()) {
+			if (meta.sseSessionId === sessionId) {
+				meta.lastSeenAt = now
+				refreshed = true
+			}
+		}
+		return refreshed
 	}
 
 	private expireHeartbeatSessions(now: number): number {
@@ -226,32 +354,42 @@ class StreamEngine {
 	/**
 	 * Add a Server-Sent Events listener for metadata updates
 	 */
-	addSSEClient(res: Response): void {
+	addSSEClient(res: Response, sessionId?: string): void {
 		res.setHeader('Content-Type', 'text/event-stream')
 		res.setHeader('Cache-Control', 'no-cache')
 		res.setHeader('Connection', 'keep-alive')
 		res.setHeader('Access-Control-Allow-Origin', '*')
 
-		this.sseClients.add(res)
+		// OS-level backstop for peers that vanished without a FIN; the reaper
+		// catches them sooner. Mirrors the audio /stream path.
+		res.socket?.setKeepAlive(true, 30_000)
+
+		// Heartbeat keeps the connection alive; guarded like every SSE write so it
+		// never writes into a stalled/dead socket the reaper is about to collect.
+		const heartbeat = setInterval(() => {
+			const current = this.sseClients.get(res)
+			if (current) this.writeSSE(res, current, ': heartbeat\n\n')
+		}, 30000)
+
+		const sseSessionId = sessionId && this.isValidSessionId(sessionId) ? sessionId : null
+		const meta: SSEClientMeta = { stalledSince: 0, heartbeat, sseSessionId, lastSeenAt: Date.now() }
+		this.sseClients.set(res, meta)
 		console.log(`[SSE] Client connected. Total: ${this.sseClients.size}`)
 
 		// Send current track immediately
 		if (this.nowPlaying) {
-			res.write(`data: ${JSON.stringify(this.nowPlaying)}\n\n`)
+			this.writeSSE(res, meta, `data: ${JSON.stringify(this.nowPlaying)}\n\n`)
 		}
-
-		// Heartbeat to keep connection alive
-		const heartbeat = setInterval(() => {
-			if (!res.writableEnded) {
-				res.write(': heartbeat\n\n')
-			}
-		}, 30000)
 
 		res.on('close', () => {
 			clearInterval(heartbeat)
 			this.sseClients.delete(res)
 			console.log(`[SSE] Client disconnected. Total: ${this.sseClients.size}`)
 		})
+	}
+
+	private writeSSE(client: Response, meta: SSEClientMeta, payload: string): boolean {
+		return writeSSEClient(client, meta, payload, '[SSE]')
 	}
 
 	/**
@@ -306,19 +444,14 @@ class StreamEngine {
 	private broadcastMetadata(): void {
 		if (!this.nowPlaying) return
 
-		const data = JSON.stringify(this.nowPlaying)
+		const payload = `data: ${JSON.stringify(this.nowPlaying)}\n\n`
 
-		for (const client of this.sseClients) {
-			try {
-				if (!client.writableEnded) {
-					client.write(`data: ${data}\n\n`)
-				} else {
-					this.sseClients.delete(client)
-				}
-			} catch (err) {
-				console.error('[SSE] Broadcast error:', err)
+		for (const [client, meta] of this.sseClients) {
+			if (client.writableEnded) {
 				this.sseClients.delete(client)
+				continue
 			}
+			this.writeSSE(client, meta, payload)
 		}
 	}
 

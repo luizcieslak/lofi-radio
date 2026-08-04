@@ -152,7 +152,7 @@ app.get('/now-playing', (req: Request, res: Response) => {
  * Connect with: new EventSource("/now-playing/events")
  */
 app.get('/now-playing/events', (req: Request, res: Response) => {
-	engine.addSSEClient(res)
+	engine.addSSEClient(res, getQueryParam(req.query.sid))
 })
 
 /**
@@ -177,6 +177,19 @@ app.post('/api/listeners/end', (req: Request, res: Response) => {
 	const sessionId = getQueryParam(req.query.sid)
 	if (sessionId) {
 		engine.endSession(sessionId)
+	}
+	res.sendStatus(204)
+})
+
+// SSE liveness heartbeat. The metadata/playlist SSE streams are open even before
+// the user presses play, so they need their own heartbeat (separate from the
+// audio-stream listener heartbeat above). A missed heartbeat lets the reaper
+// expire silently-dropped SSE sockets that no other check can detect.
+app.post('/api/sse/heartbeat', (req: Request, res: Response) => {
+	const sessionId = getQueryParam(req.query.sid)
+	if (sessionId) {
+		engine.refreshSSESession(sessionId)
+		playlistManager.refreshSSESession(sessionId)
 	}
 	res.sendStatus(204)
 })
@@ -510,7 +523,7 @@ app.get('/api/tracks', (req: Request, res: Response) => {
  * SSE endpoint for playlist/track updates
  */
 app.get('/api/playlist/events', (req: Request, res: Response) => {
-	playlistManager.addSSEClient(res)
+	playlistManager.addSSEClient(res, getQueryParam(req.query.sid))
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -549,6 +562,7 @@ engine.start(
 const shutdown = () => {
 	console.log('\nShutting down...')
 	engine.stop()
+	playlistManager.stop()
 	process.exit(0)
 }
 

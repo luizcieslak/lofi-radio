@@ -12,6 +12,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Response } from 'express'
 import { metadataManager } from './metadataManager'
+import { isSSEReapable, isValidSessionId, type SSEClientMeta, writeSSEClient } from './streamEngine'
 import type { PlaylistState, Track } from './types'
 
 const SONGS_DIR = path.join(__dirname, '../songs')
@@ -26,12 +27,74 @@ class PlaylistManager {
 	private tracks: Track[] = []
 	private nextIndex: number = 0
 	private playingIndex: number = 0
-	private sseClients: Set<Response> = new Set()
+	private sseClients: Map<Response, SSEClientMeta> = new Map()
 	private onSkipCurrentTrack: SkipCallback | null = null
+
+	// Reap silently-dropped SSE sockets (which never emit 'close') so they don't
+	// leak FDs/buffers. Mirrors the StreamEngine reaper; started lazily on the
+	// first SSE client and stopped in stop().
+	private reaperInterval: ReturnType<typeof setInterval> | null = null
+	private readonly REAPER_INTERVAL_MS = 15_000
+	private readonly STALL_TIMEOUT_MS = 45_000
+	private readonly SSE_HEARTBEAT_TTL_MS = 150_000
 
 	constructor() {
 		this.loadTracksFromDisk()
 		this.loadState()
+	}
+
+	/** Stop the SSE reaper sweep (called on graceful shutdown). */
+	stop(): void {
+		if (this.reaperInterval) {
+			clearInterval(this.reaperInterval)
+			this.reaperInterval = null
+		}
+	}
+
+	private startReaper(): void {
+		if (this.reaperInterval) return
+		this.reaperInterval = setInterval(() => this.reapStalledSSEClients(), this.REAPER_INTERVAL_MS)
+	}
+
+	/**
+	 * Destroy SSE connections that are dead or stalled past STALL_TIMEOUT_MS.
+	 * destroy() emits 'close', so the addSSEClient cleanup runs.
+	 */
+	private reapStalledSSEClients(): void {
+		const now = Date.now()
+		let reaped = 0
+		for (const [client, meta] of this.sseClients) {
+			if (
+				isSSEReapable(client, meta, {
+					now,
+					stallTimeoutMs: this.STALL_TIMEOUT_MS,
+					heartbeatTtlMs: this.SSE_HEARTBEAT_TTL_MS,
+				})
+			) {
+				client.destroy()
+				this.sseClients.delete(client)
+				reaped++
+			}
+		}
+		if (reaped > 0) {
+			console.log(
+				`[PlaylistManager SSE] Reaped ${reaped} dead/stalled connection(s). Total: ${this.sseClients.size}`,
+			)
+		}
+	}
+
+	/** Refresh a playlist-SSE session's liveness (called by the client heartbeat). */
+	refreshSSESession(sessionId: string): boolean {
+		if (!isValidSessionId(sessionId)) return false
+		let refreshed = false
+		const now = Date.now()
+		for (const meta of this.sseClients.values()) {
+			if (meta.sseSessionId === sessionId) {
+				meta.lastSeenAt = now
+				refreshed = true
+			}
+		}
+		return refreshed
 	}
 
 	/**
@@ -205,15 +268,12 @@ class PlaylistManager {
 		}
 		const message = `data: ${JSON.stringify(data)}\n\n`
 
-		for (const client of this.sseClients) {
-			try {
-				if (!client.writableEnded) {
-					client.write(message)
-				}
-			} catch (err) {
-				console.error('[PlaylistManager SSE] Broadcast error:', err)
+		for (const [client, meta] of this.sseClients) {
+			if (client.writableEnded) {
 				this.sseClients.delete(client)
+				continue
 			}
+			this.writeSSE(client, meta, message)
 		}
 	}
 
@@ -235,13 +295,31 @@ class PlaylistManager {
 		return track
 	}
 
-	addSSEClient(res: Response): void {
+	private writeSSE(client: Response, meta: SSEClientMeta, payload: string): boolean {
+		return writeSSEClient(client, meta, payload, '[PlaylistManager SSE]')
+	}
+
+	addSSEClient(res: Response, sessionId?: string): void {
 		res.setHeader('Content-Type', 'text/event-stream')
 		res.setHeader('Cache-Control', 'no-cache')
 		res.setHeader('Connection', 'keep-alive')
 		res.setHeader('Access-Control-Allow-Origin', '*')
 
-		this.sseClients.add(res)
+		// OS-level backstop for peers that vanished without a FIN; the reaper
+		// catches them sooner. Mirrors the audio /stream path.
+		res.socket?.setKeepAlive(true, 30_000)
+
+		// Heartbeat keeps the connection alive; guarded like every SSE write so it
+		// never writes into a stalled/dead socket the reaper is about to collect.
+		const heartbeat = setInterval(() => {
+			const current = this.sseClients.get(res)
+			if (current) this.writeSSE(res, current, ': heartbeat\n\n')
+		}, 30000)
+
+		const sseSessionId = sessionId && isValidSessionId(sessionId) ? sessionId : null
+		const meta: SSEClientMeta = { stalledSince: 0, heartbeat, sseSessionId, lastSeenAt: Date.now() }
+		this.sseClients.set(res, meta)
+		this.startReaper()
 		console.log(`[PlaylistManager SSE] Client connected. Total: ${this.sseClients.size}`)
 
 		// Send current state immediately
@@ -250,14 +328,7 @@ class PlaylistManager {
 			tracks: this.tracks,
 			currentIndex: this.playingIndex,
 		}
-		res.write(`data: ${JSON.stringify(data)}\n\n`)
-
-		// Heartbeat
-		const heartbeat = setInterval(() => {
-			if (!res.writableEnded) {
-				res.write(': heartbeat\n\n')
-			}
-		}, 30000)
+		this.writeSSE(res, meta, `data: ${JSON.stringify(data)}\n\n`)
 
 		res.on('close', () => {
 			clearInterval(heartbeat)
@@ -279,17 +350,12 @@ class PlaylistManager {
 		}
 		const message = `data: ${JSON.stringify(data)}\n\n`
 
-		for (const client of this.sseClients) {
-			try {
-				if (!client.writableEnded) {
-					client.write(message)
-				} else {
-					this.sseClients.delete(client)
-				}
-			} catch (err) {
-				console.error('[PlaylistManager SSE] Broadcast error:', err)
+		for (const [client, meta] of this.sseClients) {
+			if (client.writableEnded) {
 				this.sseClients.delete(client)
+				continue
 			}
+			this.writeSSE(client, meta, message)
 		}
 
 		// Persist state after track change
