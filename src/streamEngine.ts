@@ -426,8 +426,14 @@ class StreamEngine {
 			}
 			try {
 				if (!client.write(data)) {
-					meta.stalledSince = Date.now()
+					const stalledAt = Date.now()
+					meta.stalledSince = stalledAt
+					// Diagnostic only (no behavior change): confirm whether browser
+					// read-pauses are backpressuring clients and for how long.
+					const who = meta.sessionId ? `${meta.sessionId.slice(0, 8)}...` : 'anonymous'
+					console.warn(`[Stream] Client ${who} backpressured (send buffer full)`)
 					client.once('drain', () => {
+						console.log(`[Stream] Client ${who} drained after ${Date.now() - stalledAt}ms stalled`)
 						meta.stalledSince = 0
 					})
 				}
