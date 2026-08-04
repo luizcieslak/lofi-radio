@@ -12,7 +12,13 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { Response } from 'express'
 import { metadataManager } from './metadataManager'
-import { isSSEReapable, isValidSessionId, type SSEClientMeta, writeSSEClient } from './streamEngine'
+import {
+	dedupeSSESession,
+	isSSEReapable,
+	isValidSessionId,
+	type SSEClientMeta,
+	writeSSEClient,
+} from './streamEngine'
 import type { PlaylistState, Track } from './types'
 
 const SONGS_DIR = path.join(__dirname, '../songs')
@@ -317,6 +323,9 @@ class PlaylistManager {
 		}, 30000)
 
 		const sseSessionId = sessionId && isValidSessionId(sessionId) ? sessionId : null
+		// Close any prior connection for this session so reconnects don't leak
+		// orphaned entries that the shared heartbeat keeps falsely alive.
+		if (sseSessionId) dedupeSSESession(this.sseClients, sseSessionId)
 		const meta: SSEClientMeta = { stalledSince: 0, heartbeat, sseSessionId, lastSeenAt: Date.now() }
 		this.sseClients.set(res, meta)
 		this.startReaper()

@@ -98,6 +98,25 @@ export function writeSSEClient(
 	}
 }
 
+/**
+ * Close any existing SSE connection for the same session id before registering a
+ * new one. Without this, a client that reconnects its EventSource (tab focus,
+ * network blip) with the same `sid` leaves the old Response orphaned in the map —
+ * and since the client's heartbeat refreshes `lastSeenAt` on EVERY entry matching
+ * the sid, those orphans look perpetually alive and the TTL reaper never collects
+ * them. Mirrors the same-session dedup the audio /stream path already does.
+ * Destroy() fires 'close', which runs the per-client cleanup (clears the heartbeat
+ * interval + deletes from the map).
+ */
+export function dedupeSSESession(sseClients: Map<Response, SSEClientMeta>, sessionId: string): void {
+	for (const [client, meta] of sseClients) {
+		if (meta.sseSessionId === sessionId) {
+			sseClients.delete(client)
+			client.destroy()
+		}
+	}
+}
+
 interface PreloadedTrack {
 	track: Track
 	reader: Mp3FrameReader
@@ -372,6 +391,9 @@ class StreamEngine {
 		}, 30000)
 
 		const sseSessionId = sessionId && this.isValidSessionId(sessionId) ? sessionId : null
+		// Close any prior connection for this session so reconnects don't leak
+		// orphaned entries that the shared heartbeat keeps falsely alive.
+		if (sseSessionId) dedupeSSESession(this.sseClients, sseSessionId)
 		const meta: SSEClientMeta = { stalledSince: 0, heartbeat, sseSessionId, lastSeenAt: Date.now() }
 		this.sseClients.set(res, meta)
 		console.log(`[SSE] Client connected. Total: ${this.sseClients.size}`)
