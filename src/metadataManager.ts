@@ -167,6 +167,35 @@ class MetadataManager {
 	}
 
 	/**
+	 * Record a measured duration for a track.
+	 *
+	 * Separate from `update()` because that marks a track `manuallyEdited` — this is
+	 * an automated backfill from the frame walk, not a user edit. Used to cache the
+	 * true duration of tracks whose ID3 lacked one, so the walk runs once per track
+	 * ever rather than on every playback. No-ops when a duration is already stored.
+	 */
+	backfillDuration(filename: string, durationMs: number): void {
+		const existing = this.metadata[filename]
+		if (existing?.durationMs !== undefined) return
+
+		// A track with no entry at all (dropped straight into songs/, or restored
+		// without tracks-meta.json) still needs one written, or the frame walk would
+		// rerun on every play instead of once ever.
+		this.metadata[filename] = {
+			...(existing ?? {
+				title: path.basename(filename, '.mp3').replace(/[-_]/g, ' '),
+				artist: 'Unknown Artist',
+				extractedFromId3: false,
+				manuallyEdited: false,
+			}),
+			durationMs,
+			lastUpdated: Date.now(),
+		}
+		this.save()
+		console.log(`[MetadataManager] Backfilled duration for ${filename}: ${Math.round(durationMs)}ms`)
+	}
+
+	/**
 	 * Delete metadata for a track
 	 */
 	delete(filename: string): void {

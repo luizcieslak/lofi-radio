@@ -1,5 +1,7 @@
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 import type { Response } from 'express'
+import { metadataManager } from './metadataManager'
 import { Mp3FrameReader, PreciseTimer } from './mp3parser'
 import type { NowPlaying, Track } from './types'
 
@@ -122,11 +124,29 @@ interface PreloadedTrack {
 	reader: Mp3FrameReader
 	firstFrame: ReturnType<Mp3FrameReader['readNextFrame']>
 	preparedAt: number
+	/** Total track length, measured once from the frame headers. */
+	durationMs: number
+	/** Offset the reader was positioned at before the first frame was read. */
+	startMs: number
 }
 
 interface StreamTrackResult {
 	nextPreloaded: PreloadedTrack | null
+	/** Set when a DJ playTrack command interrupted this track. */
+	forcedNext: { track: Track; startMs: number } | null
 }
+
+/**
+ * A DJ control requested from the admin API. Applied by the frame loop rather
+ * than mutating engine state directly, mirroring how `skipRequested` works.
+ *
+ * Last-write-wins: commands arrive from Express handlers while the engine sits in
+ * `timer.wait()`, so two rapid clicks overwrite each other. That is the desired
+ * behavior for a scrub control.
+ */
+type PendingCommand =
+	| { kind: 'seek'; positionMs: number }
+	| { kind: 'playTrack'; track: Track; startMs: number }
 
 class StreamEngine {
 	private clients: Map<Response, ClientMeta> = new Map() // raw stream connection -> liveness
@@ -135,6 +155,12 @@ class StreamEngine {
 	private isRunning: boolean = false
 	private skipRequested: boolean = false
 	private nowPlaying: NowPlaying | null = null
+
+	// DJ controls (campaign branch): a pending command applied by the frame loop.
+	private pendingCommand: PendingCommand | null = null
+	// Live playhead + length of the current track, for the scrub bar.
+	private currentPositionMs: number = 0
+	private currentDurationMs: number = 0
 
 	// Silently-dropped sockets never emit 'close', so reap them actively to avoid
 	// leaking buffers/FDs and inflating the listener count.
@@ -150,12 +176,19 @@ class StreamEngine {
 	// client joins at the razor-thin live edge, so its browser buffer hovers near
 	// empty and underruns on any jitter -> ~80ms audible "chops". Replaying this
 	// backlog on connect gives the browser an immediate playback cushion that
-	// absorbs jitter. ~128KB ≈ 3-4s at typical bitrates.
+	// absorbs jitter.
 	// Trade-off: a new listener starts ~burst behind the live edge, so sync
 	// *between* listeners is approximate (fine for radio; nobody A/Bs two devices).
+	//
+	// CAMPAIGN BRANCH: production uses 128KB (~4.5s at the library's 232kbps). That
+	// cushion is also the delay between clicking a DJ control and HEARING it, which
+	// makes picking exact clip boundaries guesswork. Cut to 8KB (~0.3s) so the audio
+	// tracks the scrub bar closely. Safe here because this branch is localhost-only,
+	// where the jitter the cushion defends against is effectively nil.
+	// Restore to 128 * 1024 before this ever runs against real listeners.
 	private burstChunks: Buffer[] = []
 	private burstBytes = 0
-	private readonly BURST_LIMIT_BYTES = 128 * 1024
+	private readonly BURST_LIMIT_BYTES = 8 * 1024
 
 	/**
 	 * Add a new audio stream listener
@@ -483,9 +516,31 @@ class StreamEngine {
 		}
 	}
 
-	private prepareTrack(track: Track): PreloadedTrack | null {
+	/**
+	 * Open a track and cache its first frame, optionally starting at an offset.
+	 *
+	 * The seek happens BEFORE the first frame is read — otherwise frame 0 would be
+	 * broadcast ahead of the requested position, a one-frame glitch that is
+	 * inaudible in testing but lands in a recording.
+	 *
+	 * Duration comes from the track metadata when known, and is otherwise measured
+	 * by a frame walk and backfilled so the walk runs once per track ever. The walk
+	 * is deliberately here (before the first frame goes out) and never on the EOF
+	 * commit path, which is kept sub-millisecond by design.
+	 */
+	private prepareTrack(track: Track, startMs = 0): PreloadedTrack | null {
 		const preparedAt = Date.now()
 		const reader = new Mp3FrameReader(track.path)
+
+		let durationMs = track.durationMs ?? 0
+		if (!durationMs) {
+			durationMs = reader.getDurationMs()
+			const filename = path.basename(track.path)
+			metadataManager.backfillDuration(filename, durationMs)
+			track.durationMs = durationMs
+		}
+
+		const actualStartMs = startMs > 0 ? reader.seekToMs(startMs) : 0
 		const firstFrame = reader.readNextFrame()
 
 		if (!firstFrame) {
@@ -499,7 +554,21 @@ class StreamEngine {
 			reader,
 			firstFrame,
 			preparedAt,
+			durationMs,
+			startMs: actualStartMs,
 		}
+	}
+
+	/**
+	 * Drop the burst-on-connect backlog. Called on every DJ seek/jump: the backlog
+	 * holds ~3-4s of frames from the OLD position, and `addClient` replays it to
+	 * every new connection — so without this, a client connecting just after a DJ
+	 * action (exactly the recording workflow) would hear the previous track first.
+	 * Costs that one connection its jitter cushion; refills within seconds.
+	 */
+	private clearBurst(): void {
+		this.burstChunks = []
+		this.burstBytes = 0
 	}
 
 	private closePreloadedTrack(preloaded: PreloadedTrack | null): void {
@@ -548,6 +617,17 @@ class StreamEngine {
 		)
 
 		this.skipRequested = false
+		// Drop only the command that produced THIS track, so it can't re-fire and
+		// restart the track it just started. A command that arrived later (e.g. during
+		// the EOF handoff) is left pending for the frame loop below to apply —
+		// clearing unconditionally would silently swallow it and lose its startMs.
+		const pending = this.pendingCommand
+		if (pending?.kind === 'playTrack' && pending.track.id === current.track.id) {
+			this.pendingCommand = null
+		}
+
+		this.currentDurationMs = current.durationMs
+		this.currentPositionMs = current.startMs
 
 		this.nowPlaying = {
 			track: current.track,
@@ -564,10 +644,40 @@ class StreamEngine {
 		let nextPreloaded: PreloadedTrack | null = null
 		let committed = false
 		let boundaryMarkedAt: number | null = null
+		let forcedNext: { track: Track; startMs: number } | null = null
 
 		while (frame && this.isRunning && !this.skipRequested) {
 			this.broadcast(frame.data)
 			timer.addTime(frame.header.frameDurationMs)
+			this.currentPositionMs = reader.getPositionMs()
+
+			// Apply any pending DJ command before reading the next frame.
+			const command = this.takePendingCommand()
+			if (command) {
+				if (command.kind === 'playTrack') {
+					forcedNext = { track: command.track, startMs: command.startMs }
+					console.log(`[Engine] DJ play requested: ${command.track.title} @ ${command.startMs}ms`)
+					break
+				}
+
+				// Pace the frame broadcast above before repositioning. Skipping this
+				// wait would drop one frame's delay per seek — and while dragging the
+				// scrub bar that compounds into the engine broadcasting far faster
+				// than real time (measured ~1.4x), desyncing every listener.
+				await timer.wait()
+
+				// Seek within the current track: reposition, then re-pace.
+				const landedMs = reader.seekToMs(command.positionMs)
+				this.currentPositionMs = landedMs
+				// The seek walk burns wall-clock time with no frames sent, so the
+				// timer would otherwise think it is behind and rush the next frames.
+				timer.reset()
+				this.clearBurst()
+				console.log(`[Engine] DJ seek to ${Math.round(landedMs)}ms in ${current.track.title}`)
+
+				frame = reader.readNextFrame()
+				continue
+			}
 
 			const nextFrame = reader.readNextFrame()
 			frameCount++
@@ -641,10 +751,19 @@ class StreamEngine {
 		// playlist's current head — throw it away and let the outer loop fetch fresh.
 		if (wasSkipped && nextPreloaded) {
 			this.closePreloadedTrack(nextPreloaded)
-			return { nextPreloaded: null }
+			return { nextPreloaded: null, forcedNext: null }
 		}
 
-		return { nextPreloaded: committed ? nextPreloaded : null }
+		// A DJ jump takes the same exit shape as a skip: always discard the preload
+		// and return null, even when the EOF handoff already committed. Returning
+		// `committed ? nextPreloaded : null` here would hand start() the reader this
+		// branch just closed, and the next readNextFrame() would throw EBADF.
+		if (forcedNext) {
+			this.closePreloadedTrack(nextPreloaded)
+			return { nextPreloaded: null, forcedNext }
+		}
+
+		return { nextPreloaded: committed ? nextPreloaded : null, forcedNext: null }
 	}
 
 	/**
@@ -692,6 +811,24 @@ class StreamEngine {
 				// before returning it, so currentPreloaded is either ready to play
 				// immediately or null (forcing a fresh peek+commit+prepare next iteration).
 				currentPreloaded = result.nextPreloaded
+
+				// A DJ jump: the playlist cursor was already moved to this track by
+				// jumpToTrack, so the normal peek+commit path below would pick it up
+				// anyway — but we prepare it here to honour startMs.
+				if (result.forcedNext) {
+					const { track, startMs } = result.forcedNext
+					this.clearBurst()
+
+					if (!fs.existsSync(track.path)) {
+						console.error(`[Engine] File not found for DJ jump: ${track.path}`)
+						continue
+					}
+
+					const committedTrack = await commitNextTrack(track)
+					if (!committedTrack) continue
+
+					currentPreloaded = this.prepareTrack(committedTrack, startMs)
+				}
 			} catch (err) {
 				console.error('[Engine] Error streaming track:', err)
 				this.closePreloadedTrack(currentPreloaded)
@@ -721,8 +858,46 @@ class StreamEngine {
 		this.skipRequested = true
 	}
 
+	/**
+	 * Consume the pending DJ command, if any.
+	 *
+	 * Deliberately a method rather than an inline read+clear: commands are assigned
+	 * from an Express handler while the frame loop awaits, which control-flow
+	 * analysis cannot see, so an inline `this.pendingCommand = null` would narrow
+	 * the field to `never` for the rest of the loop body.
+	 */
+	private takePendingCommand(): PendingCommand | null {
+		const command = this.pendingCommand
+		this.pendingCommand = null
+		return command
+	}
+
+	/**
+	 * DJ control: seek within the currently playing track. Queued for the frame
+	 * loop to apply; last write wins if several arrive between frames.
+	 */
+	requestSeek(positionMs: number): void {
+		this.pendingCommand = { kind: 'seek', positionMs: Math.max(0, positionMs) }
+	}
+
+	/**
+	 * DJ control: jump to a specific track, optionally starting at an offset.
+	 * The caller is responsible for moving the playlist cursor first.
+	 */
+	requestPlayTrack(track: Track, startMs = 0): void {
+		this.pendingCommand = { kind: 'playTrack', track, startMs: Math.max(0, startMs) }
+	}
+
 	getNowPlaying(): NowPlaying | null {
 		return this.nowPlaying
+	}
+
+	/** Live playhead + track length, for the DJ scrub bar. */
+	getPlayback(): { positionMs: number; durationMs: number } {
+		return {
+			positionMs: this.currentPositionMs,
+			durationMs: this.currentDurationMs,
+		}
 	}
 
 	getStatus() {
@@ -731,6 +906,7 @@ class StreamEngine {
 			listenerCount: this.getListenerCount(),
 			sseClientCount: this.sseClients.size,
 			nowPlaying: this.nowPlaying,
+			playback: this.getPlayback(),
 		}
 	}
 

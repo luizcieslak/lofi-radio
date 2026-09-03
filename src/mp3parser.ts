@@ -87,11 +87,16 @@ class Mp3FrameReader {
 	private fd: number
 	private position: number = 0
 	private fileSize: number
+	/** Byte offset of the first frame (after any ID3v2 tag). Seeks rewind here. */
+	private firstFramePosition: number = 0
+	/** Playback position in ms, accumulated from the durations of frames consumed. */
+	private positionMs: number = 0
 
 	constructor(filePath: string) {
 		this.fd = fs.openSync(filePath, 'r')
 		this.fileSize = fs.fstatSync(this.fd).size
 		this.skipId3v2Tag()
+		this.firstFramePosition = this.position
 	}
 
 	/**
@@ -115,38 +120,111 @@ class Mp3FrameReader {
 	}
 
 	/**
+	 * Advance `position` to the next valid frame header and return it, without
+	 * reading the frame body. Resyncs past garbage by scanning forward one byte at
+	 * a time. Returns null at EOF.
+	 *
+	 * Iterative on purpose: this is used to walk entire files (seek/duration), and
+	 * a recursive resync would risk a stack overflow on any large non-frame region.
+	 */
+	private nextFrameHeader(): Mp3FrameHeader | null {
+		const headerBuf = Buffer.alloc(4)
+
+		while (this.position < this.fileSize) {
+			const bytesRead = fs.readSync(this.fd, headerBuf, 0, 4, this.position)
+			if (bytesRead < 4) return null
+
+			const header = parseFrameHeader(headerBuf)
+			if (header) return header
+
+			// Not a valid frame header: skip one byte and resync.
+			this.position++
+		}
+
+		return null
+	}
+
+	/**
 	 * Read the next MP3 frame from the file
 	 */
 	readNextFrame(): { data: Buffer; header: Mp3FrameHeader } | null {
-		if (this.position >= this.fileSize) {
-			return null
-		}
-
-		// Read potential frame header (4 bytes)
-		const headerBuf = Buffer.alloc(4)
-		const bytesRead = fs.readSync(this.fd, headerBuf, 0, 4, this.position)
-
-		if (bytesRead < 4) {
-			return null
-		}
-
-		// Try to parse as frame header
-		const header = parseFrameHeader(headerBuf)
-
-		if (!header) {
-			// Not a valid frame header, skip one byte and try again
-			// This handles garbage data between frames
-			this.position++
-			return this.readNextFrame()
-		}
+		const header = this.nextFrameHeader()
+		if (!header) return null
 
 		// Read the full frame (including header)
 		const frameData = Buffer.alloc(header.frameSize)
 		fs.readSync(this.fd, frameData, 0, header.frameSize, this.position)
 
 		this.position += header.frameSize
+		this.positionMs += header.frameDurationMs
 
 		return { data: frameData, header }
+	}
+
+	/** Current playback position in ms (sum of the durations of frames consumed). */
+	getPositionMs(): number {
+		return this.positionMs
+	}
+
+	/**
+	 * Seek to `targetMs` by walking frames from the start and accumulating their
+	 * durations, stopping at the first frame at or past the target. Returns the
+	 * position actually landed on (clamped to [0, duration]).
+	 *
+	 * Walks rather than interpolating byte offsets because the library is VBR
+	 * (libmp3lame V0), so frame sizes vary and a byte-ratio estimate would drift.
+	 * Header-only: no frame bodies are allocated during the walk.
+	 *
+	 * Note: MP3's bit reservoir means a frame can reference up to ~511 bytes of the
+	 * preceding frame, so the first frames after a seek may decode with a brief
+	 * (~50ms) artifact. Acceptable for an auditioning tool.
+	 */
+	seekToMs(targetMs: number): number {
+		const target = Math.max(0, targetMs)
+
+		this.position = this.firstFramePosition
+		this.positionMs = 0
+
+		while (this.positionMs < target) {
+			const before = this.position
+			const header = this.nextFrameHeader()
+			if (!header) {
+				// EOF before reaching the target: clamp here.
+				this.position = before
+				break
+			}
+			this.position += header.frameSize
+			this.positionMs += header.frameDurationMs
+		}
+
+		return this.positionMs
+	}
+
+	/**
+	 * Total duration in ms, measured by walking every frame header to EOF.
+	 * Restores the reader's prior position, so it is safe to call mid-playback.
+	 *
+	 * Synchronous and O(frames); callers should cache the result rather than
+	 * calling it repeatedly (see metadataManager duration backfill).
+	 */
+	getDurationMs(): number {
+		const savedPosition = this.position
+		const savedPositionMs = this.positionMs
+
+		this.position = this.firstFramePosition
+		let totalMs = 0
+
+		while (true) {
+			const header = this.nextFrameHeader()
+			if (!header) break
+			this.position += header.frameSize
+			totalMs += header.frameDurationMs
+		}
+
+		this.position = savedPosition
+		this.positionMs = savedPositionMs
+
+		return totalMs
 	}
 
 	close(): void {
@@ -155,7 +233,9 @@ class Mp3FrameReader {
 
 	reset(): void {
 		this.position = 0
+		this.positionMs = 0
 		this.skipId3v2Tag()
+		this.firstFramePosition = this.position
 	}
 }
 

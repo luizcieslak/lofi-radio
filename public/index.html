@@ -500,6 +500,178 @@
       transform: scale(1.05);
     }
 
+    /* DJ Panel */
+    .dj-warning {
+      background: rgba(251, 191, 36, 0.15);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      color: #fbbf24;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
+    .dj-now {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .dj-now-title {
+      font-size: 15px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dj-now-artist {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-bottom: 12px;
+    }
+
+    .dj-scrub {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: rgba(255, 255, 255, 0.25);
+      outline: none;
+      cursor: pointer;
+    }
+
+    .dj-scrub:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .dj-scrub::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    .dj-scrub::-moz-range-thumb {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      cursor: pointer;
+      border: none;
+    }
+
+    .dj-timecode {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 6px;
+    }
+
+    .dj-nudge {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .dj-nudge-btn {
+      flex: 1;
+      padding: 7px 0;
+      border: none;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.85);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .dj-nudge-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .dj-nudge-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .dj-error {
+      color: #ff6b6b;
+      font-size: 12px;
+      margin-top: 10px;
+      min-height: 0;
+    }
+
+    .dj-search {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .dj-search:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .dj-track-list {
+      max-height: 320px;
+      overflow-y: auto;
+    }
+
+    .dj-track {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 9px 12px;
+      margin-bottom: 6px;
+      border: none;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.05);
+      color: #fff;
+      text-align: left;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .dj-track:hover {
+      background: rgba(102, 126, 234, 0.25);
+    }
+
+    .dj-track.playing {
+      background: linear-gradient(135deg, rgba(102, 126, 234, 0.35) 0%, rgba(118, 75, 162, 0.35) 100%);
+      border: 1px solid rgba(102, 126, 234, 0.5);
+    }
+
+    .dj-track-name {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .dj-track-artist {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.55);
+    }
+
     /* Edit Modal */
     .modal-overlay {
       position: fixed;
@@ -662,6 +834,7 @@
         <div class="admin-tabs">
           <button class="admin-tab active" data-tab="upload">📤 Upload</button>
           <button class="admin-tab" data-tab="manage">📋 Manage</button>
+          <button class="admin-tab" data-tab="dj">🎛️ DJ</button>
         </div>
 
         <!-- Upload Tab -->
@@ -707,6 +880,35 @@
             </div>
           </div>
           <div class="track-manager" id="trackManager">
+            <p style="color: rgba(255,255,255,0.5); text-align: center;">Loading tracks...</p>
+          </div>
+        </div>
+
+        <!-- DJ Tab -->
+        <div class="tab-content" id="djTab" style="display: none;">
+          <div class="dj-warning">
+            ⚠️ These controls change the <strong>live broadcast</strong> for every listener.
+          </div>
+
+          <div class="dj-now">
+            <div class="dj-now-title" id="djNowTitle">—</div>
+            <div class="dj-now-artist" id="djNowArtist">—</div>
+            <input type="range" class="dj-scrub" id="djScrub" min="0" max="1000" step="1" value="0" disabled>
+            <div class="dj-timecode">
+              <span id="djPosition">0:00</span>
+              <span id="djDuration">0:00</span>
+            </div>
+            <div class="dj-nudge">
+              <button class="dj-nudge-btn" data-nudge="-10">« 10s</button>
+              <button class="dj-nudge-btn" data-nudge="-5">« 5s</button>
+              <button class="dj-nudge-btn" data-nudge="5">5s »</button>
+              <button class="dj-nudge-btn" data-nudge="10">10s »</button>
+            </div>
+            <div class="dj-error" id="djError"></div>
+          </div>
+
+          <input type="search" class="dj-search" id="djSearch" placeholder="Filter tracks…" autocomplete="off">
+          <div class="dj-track-list" id="djTrackList">
             <p style="color: rgba(255,255,255,0.5); text-align: center;">Loading tracks...</p>
           </div>
         </div>
@@ -1215,6 +1417,7 @@
     closeAdmin.addEventListener('click', () => {
       adminCard.style.display = 'none';
       adminToggle.style.display = 'block';
+      stopDJPolling();
     });
 
     // Tab switching
@@ -1227,8 +1430,14 @@
         document.getElementById('uploadTab').style.display = tabName === 'upload' ? 'block' : 'none';
         document.getElementById('manageTab').style.display = tabName === 'manage' ? 'block' : 'none';
 
+        document.getElementById('djTab').style.display = tabName === 'dj' ? 'block' : 'none';
+
         if (tabName === 'manage') {
           loadManagedTracks();
+        } else if (tabName === 'dj') {
+          openDJTab();
+        } else {
+          stopDJPolling();
         }
       });
     });
@@ -1542,6 +1751,217 @@
     }
 
     window.deleteTrack = deleteTrack;
+
+    // ========================================================================
+    // DJ CONTROLS (campaign branch)
+    //
+    // These drive the single global broadcast: picking a track or scrubbing
+    // changes what every listener hears. Admin-gated; intended for local use
+    // while auditioning clips for promo videos.
+    // ========================================================================
+
+    const djScrub = document.getElementById('djScrub');
+    const djPosition = document.getElementById('djPosition');
+    const djDuration = document.getElementById('djDuration');
+    const djNowTitle = document.getElementById('djNowTitle');
+    const djNowArtist = document.getElementById('djNowArtist');
+    const djTrackList = document.getElementById('djTrackList');
+    const djSearch = document.getElementById('djSearch');
+    const djError = document.getElementById('djError');
+
+    // Playhead is extrapolated from the last server reading plus wall-clock, so
+    // the bar animates smoothly without polling several times a second.
+    let djPollTimer = null;
+    let djTickTimer = null;
+    let djScrubbing = false;
+    let djAnchorPositionMs = 0;
+    let djAnchorAt = 0;
+    let djDurationMs = 0;
+    let djCurrentFilename = null;
+
+    function formatTime(ms) {
+      if (!Number.isFinite(ms) || ms < 0) ms = 0;
+      const total = Math.floor(ms / 1000);
+      const minutes = Math.floor(total / 60);
+      const seconds = total % 60;
+      return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function djShowError(message) {
+      djError.textContent = message || '';
+    }
+
+    function estimatedPositionMs() {
+      if (!djDurationMs) return 0;
+      const elapsed = Date.now() - djAnchorAt;
+      return Math.min(djAnchorPositionMs + elapsed, djDurationMs);
+    }
+
+    function renderPlayhead() {
+      if (djScrubbing || !djDurationMs) return;
+      const positionMs = estimatedPositionMs();
+      djScrub.value = String(Math.round((positionMs / djDurationMs) * 1000));
+      djPosition.textContent = formatTime(positionMs);
+    }
+
+    async function refreshDJState() {
+      try {
+        const res = await fetch(`/now-playing?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (!data.track) {
+          djNowTitle.textContent = 'Nothing playing';
+          djNowArtist.textContent = '—';
+          djScrub.disabled = true;
+          djDurationMs = 0;
+          return;
+        }
+
+        djNowTitle.textContent = data.track.title || 'Unknown Title';
+        djNowArtist.textContent = data.track.artist || 'Unknown Artist';
+        djCurrentFilename = (data.track.path || '').split('/').pop();
+
+        djDurationMs = Number(data.durationMs) || 0;
+        djAnchorPositionMs = Number(data.positionMs) || 0;
+        djAnchorAt = Date.now();
+
+        djScrub.disabled = !djDurationMs;
+        djDuration.textContent = formatTime(djDurationMs);
+        renderPlayhead();
+        renderDJTracks();
+      } catch (_err) {
+        // Transient; the next poll retries.
+      }
+    }
+
+    function startDJPolling() {
+      stopDJPolling();
+      // Server is polled every 5s to correct drift; the local tick animates between.
+      djPollTimer = setInterval(refreshDJState, 5000);
+      djTickTimer = setInterval(renderPlayhead, 250);
+    }
+
+    function stopDJPolling() {
+      if (djPollTimer) { clearInterval(djPollTimer); djPollTimer = null; }
+      if (djTickTimer) { clearInterval(djTickTimer); djTickTimer = null; }
+    }
+
+    function renderDJTracks() {
+      if (managedTracks.length === 0) {
+        djTrackList.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No tracks found</p>';
+        return;
+      }
+
+      const filter = djSearch.value.trim().toLowerCase();
+      const matches = managedTracks.filter(track => {
+        if (!filter) return true;
+        return `${track.title} ${track.artist}`.toLowerCase().includes(filter);
+      });
+
+      if (matches.length === 0) {
+        djTrackList.innerHTML = '<p style="color: rgba(255,255,255,0.5); text-align: center;">No matching tracks</p>';
+        return;
+      }
+
+      djTrackList.innerHTML = matches.map(track => {
+        const filename = track.path.split('/').pop();
+        const isPlaying = filename === djCurrentFilename;
+        // escapeHtml is correct here (HTML interpolation). The fetch body uses
+        // JSON.stringify instead — a different escaping context.
+        return `
+          <button class="dj-track${isPlaying ? ' playing' : ''}" data-filename="${escapeHtml(filename)}">
+            <span>${isPlaying ? '▶' : '🎵'}</span>
+            <span class="dj-track-name">
+              ${escapeHtml(track.title)}
+              <span class="dj-track-artist">— ${escapeHtml(track.artist)}</span>
+            </span>
+          </button>
+        `;
+      }).join('');
+    }
+
+    async function djPlayTrack(filename, startMs = 0) {
+      djShowError('');
+      try {
+        const res = await fetch('/admin/dj/play', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ filename, startMs })
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          djShowError(body.error || 'Failed to play track');
+          return;
+        }
+
+        // The engine applies the jump on its next frame; give it a beat.
+        setTimeout(refreshDJState, 400);
+      } catch (_err) {
+        djShowError('Connection error');
+      }
+    }
+
+    async function djSeek(positionMs) {
+      djShowError('');
+      try {
+        const res = await fetch('/admin/dj/seek', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ positionMs: Math.round(positionMs) })
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          djShowError(body.error || 'Failed to seek');
+          return;
+        }
+
+        // Anchor optimistically so the bar doesn't snap back before the next poll.
+        djAnchorPositionMs = positionMs;
+        djAnchorAt = Date.now();
+        setTimeout(refreshDJState, 400);
+      } catch (_err) {
+        djShowError('Connection error');
+      }
+    }
+
+    djTrackList.addEventListener('click', e => {
+      const button = e.target.closest('.dj-track');
+      if (button) djPlayTrack(button.dataset.filename, 0);
+    });
+
+    djSearch.addEventListener('input', renderDJTracks);
+
+    // Update the label live while dragging, but only hit the API on release so a
+    // drag doesn't fire a request per pixel.
+    djScrub.addEventListener('input', () => {
+      if (!djDurationMs) return;
+      djScrubbing = true;
+      djPosition.textContent = formatTime((djScrub.value / 1000) * djDurationMs);
+    });
+
+    djScrub.addEventListener('change', () => {
+      if (!djDurationMs) return;
+      djScrubbing = false;
+      djSeek((djScrub.value / 1000) * djDurationMs);
+    });
+
+    document.querySelectorAll('.dj-nudge-btn').forEach(button => {
+      button.addEventListener('click', () => {
+        if (!djDurationMs) return;
+        const deltaMs = Number(button.dataset.nudge) * 1000;
+        djSeek(Math.max(0, Math.min(estimatedPositionMs() + deltaMs, djDurationMs)));
+      });
+    });
+
+    async function openDJTab() {
+      if (managedTracks.length === 0) await loadManagedTracks();
+      await refreshDJState();
+      renderDJTracks();
+      startDJPolling();
+    }
 
     init();
   </script>

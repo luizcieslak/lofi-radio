@@ -151,6 +151,16 @@ REST API and web server with endpoints:
 - `GET /api/playlist/events` - Playlist SSE updates
 - `GET /` - Web player UI
 
+**DJ controls (campaign branch only — `campaign/dj-controls`, requires `X-API-Key`):**
+- `POST /admin/dj/play` — `{ filename, startMs? }` jump the station to a track, optionally at an offset
+- `POST /admin/dj/seek` — `{ positionMs }` seek within the current track
+
+> ⚠️ These drive the **single global broadcast**: a jump or seek changes what every
+> listener hears. They exist to audition ~1min clips for promo videos on a local
+> instance. That branch also drops `BURST_LIMIT_BYTES` from 128KB to 8KB (~4.5s →
+> ~0.3s of click-to-audio delay) so the audio tracks the scrub bar. **Restore the
+> 128KB burst and drop these routes before anything ships to real listeners.**
+
 **Admin (requires `X-API-Key` header):**
 - `POST /admin/upload` - Upload single MP3 (auto-normalized to 44100 Hz / stereo and -14 LUFS loudness if needed)
 - `POST /admin/upload/batch` - Upload multiple MP3s (each auto-normalized for format + loudness; processed sequentially to avoid starving the streaming engine)

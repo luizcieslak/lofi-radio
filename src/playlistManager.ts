@@ -283,6 +283,27 @@ class PlaylistManager {
 		}
 	}
 
+	/**
+	 * DJ control: point the playlist cursor at a specific track so it plays next.
+	 *
+	 * Keyed on filename, not track id: ids are positional (`String(index + 1)`) and
+	 * every rescan() renumbers them, so a stale id from the UI would address a
+	 * different song. All the other admin paths key on filename for the same reason.
+	 *
+	 * Deliberately sets ONLY nextIndex. It does not touch playingIndex and does not
+	 * call notifyTrackChange — the existing commitNextTrack() -> notifyTrackChange()
+	 * path does both, and duplicating them here would double-broadcast the track
+	 * change and announce the new track while the old one was still being streamed.
+	 * Natural rotation resumes from the track after this one.
+	 */
+	jumpToTrack(filename: string): Track | undefined {
+		const index = this.tracks.findIndex(t => path.basename(t.path) === filename)
+		if (index === -1) return undefined
+
+		this.nextIndex = index
+		return this.tracks[index]
+	}
+
 	peekNextTrack(): Track | undefined {
 		if (this.tracks.length === 0) {
 			return undefined
