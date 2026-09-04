@@ -154,6 +154,19 @@ REST API and web server with endpoints:
 **DJ controls (campaign branch only — `campaign/dj-controls`, requires `X-API-Key`):**
 - `POST /admin/dj/play` — `{ filename, startMs? }` jump the station to a track, optionally at an offset
 - `POST /admin/dj/seek` — `{ positionMs }` seek within the current track
+- `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's clip markers (wholesale)
+- `GET /admin/clips` — all clip markers keyed by filename (JSON export + UI badges)
+
+**Clip markers.** For picking the ~1min slice of each song to feature, the DJ tab
+marks in/out points (multiple per track) — either from the live playhead via
+Mark In/Out, or typed by hand (`m:ss`, `m:ss.f`, `h:mm:ss`, or raw ms; parsed by
+`parseTimestamp`, which is duplicated in the browser and kept honest by a
+parity check) — replays any marked clip, and exports everything as JSON. Clips live in `tracks-meta.json` keyed by **filename** — not by
+track id, which `rescan()` renumbers — so they survive restarts and reordering, and
+are dropped with the track on delete. `Clip` is deliberately absent from the public
+`Track` type: it is authoring data that `/api/tracks` and the `cieslak-dev` player
+have no use for. Validation lives in a pure, unit-tested
+[src/clipValidation.ts](src/clipValidation.ts) rather than inline in the route.
 
 > ⚠️ These drive the **single global broadcast**: a jump or seek changes what every
 > listener hears. They exist to audition ~1min clips for promo videos on a local

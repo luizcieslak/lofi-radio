@@ -568,6 +568,269 @@
       border: none;
     }
 
+    /* Marker overlay sits above the range input but must never swallow drags. */
+    .dj-scrub-wrap {
+      position: relative;
+    }
+
+    .dj-markers {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .dj-marker {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px;
+      height: 14px;
+      border-radius: 1px;
+      background: #4ade80;
+      box-shadow: 0 0 4px rgba(74, 222, 128, 0.8);
+    }
+
+    .dj-marker.out {
+      background: #fbbf24;
+      box-shadow: 0 0 4px rgba(251, 191, 36, 0.8);
+    }
+
+    .dj-marker-span {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 6px;
+      background: rgba(74, 222, 128, 0.25);
+      border-radius: 3px;
+    }
+
+    .dj-mark-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .dj-mark-btn {
+      padding: 7px 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .dj-mark-btn.in {
+      background: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+
+    .dj-mark-btn.in:hover:not(:disabled) {
+      background: rgba(74, 222, 128, 0.35);
+    }
+
+    .dj-mark-btn.out {
+      background: rgba(251, 191, 36, 0.2);
+      color: #fbbf24;
+    }
+
+    .dj-mark-btn.out:hover:not(:disabled) {
+      background: rgba(251, 191, 36, 0.35);
+    }
+
+    .dj-mark-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .dj-pending {
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: rgba(255, 255, 255, 0.5);
+      margin-left: auto;
+    }
+
+    .dj-manual-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .dj-manual-input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dj-manual-input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .dj-manual-input::placeholder {
+      color: rgba(255, 255, 255, 0.35);
+    }
+
+    .dj-manual-sep {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+      flex-shrink: 0;
+    }
+
+    .dj-manual-add {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(102, 126, 234, 0.25);
+      color: #a5b4fc;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+
+    .dj-manual-add:hover {
+      background: rgba(102, 126, 234, 0.4);
+    }
+
+    .dj-manual-hint {
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.35);
+      margin-top: 5px;
+    }
+
+    .dj-manual-hint code {
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-size: 10px;
+    }
+
+    .dj-clips {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+
+    .dj-clips-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+
+    .dj-clip-count {
+      color: rgba(255, 255, 255, 0.5);
+      font-weight: 400;
+      font-size: 11px;
+    }
+
+    .dj-export-btn {
+      padding: 5px 10px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(102, 126, 234, 0.25);
+      color: #a5b4fc;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .dj-export-btn:hover {
+      background: rgba(102, 126, 234, 0.4);
+    }
+
+    .dj-clip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 6px;
+      margin-bottom: 5px;
+      font-size: 12px;
+    }
+
+    .dj-clip-play,
+    .dj-clip-del {
+      border: none;
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .dj-clip-play {
+      background: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+
+    .dj-clip-del {
+      background: rgba(255, 107, 107, 0.2);
+      color: #ff6b6b;
+    }
+
+    .dj-clip-range {
+      font-variant-numeric: tabular-nums;
+      flex-shrink: 0;
+    }
+
+    .dj-clip.overruns {
+      border: 1px solid rgba(251, 191, 36, 0.4);
+    }
+
+    .dj-clip-warn {
+      color: #fbbf24;
+      font-size: 11px;
+      flex-shrink: 0;
+      cursor: help;
+    }
+
+    /* Not flex:1 — a stretched span would turn the row's empty slack into a
+       click target that opens a blocking prompt(). Sized to its text instead. */
+    .dj-clip-label {
+      max-width: 40%;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      cursor: text;
+      margin-right: auto;
+    }
+
+    .dj-clip-dur {
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 10px;
+      flex-shrink: 0;
+    }
+
+    .dj-track-clips {
+      font-size: 10px;
+      color: #4ade80;
+      flex-shrink: 0;
+    }
+
+    .dj-empty {
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 12px;
+      text-align: center;
+      padding: 8px;
+    }
+
     .dj-timecode {
       display: flex;
       justify-content: space-between;
@@ -893,7 +1156,10 @@
           <div class="dj-now">
             <div class="dj-now-title" id="djNowTitle">—</div>
             <div class="dj-now-artist" id="djNowArtist">—</div>
-            <input type="range" class="dj-scrub" id="djScrub" min="0" max="1000" step="1" value="0" disabled>
+            <div class="dj-scrub-wrap">
+              <input type="range" class="dj-scrub" id="djScrub" min="0" max="1000" step="1" value="0" disabled>
+              <div class="dj-markers" id="djMarkers"></div>
+            </div>
             <div class="dj-timecode">
               <span id="djPosition">0:00</span>
               <span id="djDuration">0:00</span>
@@ -904,7 +1170,27 @@
               <button class="dj-nudge-btn" data-nudge="5">5s »</button>
               <button class="dj-nudge-btn" data-nudge="10">10s »</button>
             </div>
+            <div class="dj-mark-row">
+              <button class="dj-mark-btn in" id="djMarkIn">⌖ Mark In</button>
+              <button class="dj-mark-btn out" id="djMarkOut" disabled>⌖ Mark Out</button>
+              <span class="dj-pending" id="djPending">no in-point</span>
+            </div>
+            <div class="dj-manual-row">
+              <input type="text" class="dj-manual-input" id="djManualStart" placeholder="1:23 or 83000" autocomplete="off" aria-label="Clip start (m:ss or milliseconds)">
+              <span class="dj-manual-sep">→</span>
+              <input type="text" class="dj-manual-input" id="djManualEnd" placeholder="2:23 or 143000" autocomplete="off" aria-label="Clip end (m:ss or milliseconds)">
+              <button class="dj-manual-add" id="djManualAdd">+ Add</button>
+            </div>
+            <div class="dj-manual-hint">Accepts <code>m:ss</code>, <code>m:ss.f</code>, <code>h:mm:ss</code>, or raw milliseconds</div>
             <div class="dj-error" id="djError"></div>
+          </div>
+
+          <div class="dj-clips">
+            <div class="dj-clips-header">
+              <span>Clips <span class="dj-clip-count" id="djClipCount"></span></span>
+              <button class="dj-export-btn" id="djExport">⬇ Export JSON</button>
+            </div>
+            <div id="djClipList"></div>
           </div>
 
           <input type="search" class="dj-search" id="djSearch" placeholder="Filter tracks…" autocomplete="off">
@@ -1282,6 +1568,14 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    // escapeHtml goes through textContent -> innerHTML, which escapes & < > but
+    // NOT quotes — safe for text nodes, NOT for attribute values, where a quote
+    // would break out of the attribute. Use this for anything interpolated into
+    // an attribute (filenames and ids can contain quotes).
+    function escapeAttr(text) {
+      return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     function updateCurrentTrack(index) {
@@ -1820,6 +2114,9 @@
 
         djNowTitle.textContent = data.track.title || 'Unknown Title';
         djNowArtist.textContent = data.track.artist || 'Unknown Artist';
+
+        const previousFilename = djCurrentFilename;
+        const previousDurationMs = djDurationMs;
         djCurrentFilename = (data.track.path || '').split('/').pop();
 
         djDurationMs = Number(data.durationMs) || 0;
@@ -1830,6 +2127,17 @@
         djDuration.textContent = formatTime(djDurationMs);
         renderPlayhead();
         renderDJTracks();
+
+        // The track changed under us: a half-marked in-point belongs to the old
+        // track, so drop it rather than let Mark Out pair it with a new track.
+        if (previousFilename !== djCurrentFilename) {
+          setPendingIn(null);
+          renderClips();
+        } else if (djDurationMs !== previousDurationMs) {
+          // Marker offsets are a percentage of duration, so a duration change
+          // (e.g. first play, once the frame walk measured it) restales them.
+          renderMarkers();
+        }
       } catch (_err) {
         // Transient; the next poll retries.
       }
@@ -1867,15 +2175,19 @@
       djTrackList.innerHTML = matches.map(track => {
         const filename = track.path.split('/').pop();
         const isPlaying = filename === djCurrentFilename;
-        // escapeHtml is correct here (HTML interpolation). The fetch body uses
-        // JSON.stringify instead — a different escaping context.
+        // Badge marked tracks so it's visible which of 100+ songs are already done.
+        const clipCount = (djClipsByFilename[filename] || []).length;
+        // Three different escaping contexts: escapeAttr for attribute values
+        // (escapeHtml leaves quotes intact, which would break out), escapeHtml for
+        // text nodes, and JSON.stringify for the fetch body.
         return `
-          <button class="dj-track${isPlaying ? ' playing' : ''}" data-filename="${escapeHtml(filename)}">
+          <button class="dj-track${isPlaying ? ' playing' : ''}" data-filename="${escapeAttr(filename)}">
             <span>${isPlaying ? '▶' : '🎵'}</span>
             <span class="dj-track-name">
               ${escapeHtml(track.title)}
               <span class="dj-track-artist">— ${escapeHtml(track.artist)}</span>
             </span>
+            ${clipCount ? `<span class="dj-track-clips">✂ ${clipCount}</span>` : ''}
           </button>
         `;
       }).join('');
@@ -1956,10 +2268,330 @@
       });
     });
 
+    // ========================================================================
+    // CLIP MARKERS
+    //
+    // Mark in/out points while auditioning, replay any marked clip, export all
+    // markers as JSON for cutting the actual promo videos. Stored server-side in
+    // tracks-meta.json (keyed by filename, so they survive rescans/reorders).
+    // ========================================================================
+
+    const djMarkers = document.getElementById('djMarkers');
+    const djMarkIn = document.getElementById('djMarkIn');
+    const djMarkOut = document.getElementById('djMarkOut');
+    const djPending = document.getElementById('djPending');
+    const djClipList = document.getElementById('djClipList');
+    const djClipCount = document.getElementById('djClipCount');
+    const djExport = document.getElementById('djExport');
+    const djManualStart = document.getElementById('djManualStart');
+    const djManualEnd = document.getElementById('djManualEnd');
+    const djManualAdd = document.getElementById('djManualAdd');
+
+    // One map for the whole library: drives both the current track's clip list and
+    // the "has clips" badges in the picker. Refreshed after every mutation.
+    let djClipsByFilename = {};
+    let djPendingInMs = null;
+
+    function currentClips() {
+      return djCurrentFilename ? (djClipsByFilename[djCurrentFilename] || []) : [];
+    }
+
+    async function loadAllClips() {
+      try {
+        const res = await fetch('/admin/clips', { headers: { 'X-API-Key': apiKey } });
+        if (!res.ok) return;
+        const data = await res.json();
+        djClipsByFilename = data.clips || {};
+      } catch (_err) {
+        // Leave the previous map in place; the next mutation retries.
+      }
+    }
+
+    /**
+     * Apply a change to one track's clip list against FRESH server state.
+     *
+     * PUT replaces the list wholesale, so computing the new list from the local
+     * map would silently destroy any clip added since the map was last loaded
+     * (the 5s DJ poll refreshes the playhead, not clips). Re-reading immediately
+     * before the write keeps that window to a single request. `mutate` receives
+     * the server's current list and returns the replacement.
+     */
+    async function mutateClips(filename, mutate) {
+      await loadAllClips();
+      return saveClips(filename, mutate(djClipsByFilename[filename] || []));
+    }
+
+    /**
+     * Persist the clip list for a specific track. The filename is passed in
+     * (captured at render time) rather than read from djCurrentFilename, so a
+     * track change between render and click can't write one track's clips onto
+     * another track's key.
+     */
+    async function saveClips(filename, clips) {
+      djShowError('');
+      try {
+        const res = await fetch(`/admin/tracks/${encodeURIComponent(filename)}/clips`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          body: JSON.stringify({ clips })
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          djShowError(body.error || 'Failed to save clips');
+          return false;
+        }
+
+        const data = await res.json();
+        djClipsByFilename[filename] = data.clips;
+        renderClips();
+        renderDJTracks();
+        return true;
+      } catch (_err) {
+        djShowError('Connection error');
+        return false;
+      }
+    }
+
+    function renderMarkers() {
+      if (!djDurationMs) {
+        djMarkers.innerHTML = '';
+        return;
+      }
+
+      // Percentages share renderPlayhead's basis (position / duration), so markers
+      // stay aligned with the thumb across track changes.
+      djMarkers.innerHTML = currentClips().map(clip => {
+        const startPct = Math.max(0, Math.min((clip.startMs / djDurationMs) * 100, 100));
+        const endPct = Math.max(0, Math.min((clip.endMs / djDurationMs) * 100, 100));
+        return `
+          <div class="dj-marker-span" style="left: ${startPct}%; width: ${Math.max(0, endPct - startPct)}%;"></div>
+          <div class="dj-marker" style="left: ${startPct}%;"></div>
+          <div class="dj-marker out" style="left: ${endPct}%;"></div>
+        `;
+      }).join('');
+    }
+
+    function renderClips() {
+      const clips = currentClips();
+      const filename = djCurrentFilename;
+      djClipCount.textContent = clips.length ? `(${clips.length})` : '';
+
+      if (!filename) {
+        djClipList.innerHTML = '<div class="dj-empty">No track playing</div>';
+      } else if (clips.length === 0) {
+        djClipList.innerHTML = '<div class="dj-empty">No clips yet — use Mark In / Mark Out</div>';
+      } else {
+        djClipList.innerHTML = clips.map(clip => {
+          // The server can't bound endMs against the track length (that would need
+          // a frame walk on the request path), so flag it here instead — a clip
+          // past the end silently produces a short or empty cut in ffmpeg.
+          const overruns = djDurationMs > 0 && clip.endMs > djDurationMs;
+          return `
+          <div class="dj-clip${overruns ? ' overruns' : ''}" data-filename="${escapeAttr(filename)}" data-clip-id="${escapeAttr(clip.id)}">
+            <button class="dj-clip-play" title="Play from clip start">▶</button>
+            <span class="dj-clip-range">${formatTime(clip.startMs)}–${formatTime(clip.endMs)}</span>
+            <span class="dj-clip-dur">${((clip.endMs - clip.startMs) / 1000).toFixed(1)}s</span>
+            ${overruns ? `<span class="dj-clip-warn" title="Ends after the track does (${formatTime(djDurationMs)})">⚠</span>` : ''}
+            <span class="dj-clip-label" title="Click to edit label">${clip.label ? escapeHtml(clip.label) : '<em>+ label</em>'}</span>
+            <button class="dj-clip-del" title="Delete clip">🗑</button>
+          </div>
+        `;
+        }).join('');
+      }
+
+      renderMarkers();
+    }
+
+    /**
+     * Parse a hand-typed timestamp into milliseconds.
+     *   "1:23" -> 83000   "1:23.5" -> 83500   "1:02:03" -> 3723000   "83000" -> 83000
+     * A bare number is milliseconds, matching the exported JSON (the other thing
+     * you'd paste from). Returns null when unparseable, so 0 stays distinguishable.
+     *
+     * Mirrors parseTimestamp in src/clipValidation.ts — that copy is the tested
+     * one; keep the two in sync if the accepted formats change.
+     */
+    function parseTimestamp(input) {
+      const trimmed = String(input).trim();
+      if (trimmed === '') return null;
+
+      if (trimmed.includes(':')) {
+        const parts = trimmed.split(':');
+        if (parts.length > 3) return null;
+
+        let total = 0;
+        for (let i = 0; i < parts.length; i++) {
+          const isLast = i === parts.length - 1;
+          const pattern = isLast ? /^\d+(\.\d+)?$/ : /^\d+$/;
+          if (!pattern.test(parts[i])) return null;
+
+          const value = Number(parts[i]);
+          if (!Number.isFinite(value)) return null;
+          if (i > 0 && value >= 60) return null;
+
+          total = total * 60 + value;
+        }
+        return Math.round(total * 1000);
+      }
+
+      if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+      const ms = Number(trimmed);
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    function setPendingIn(ms) {
+      djPendingInMs = ms;
+      const hasPending = ms !== null;
+      djMarkOut.disabled = !hasPending;
+      djPending.textContent = hasPending ? `in @ ${formatTime(ms)}` : 'no in-point';
+    }
+
+    djMarkIn.addEventListener('click', () => {
+      if (!djDurationMs) return;
+      const positionMs = estimatedPositionMs();
+      setPendingIn(positionMs);
+      // Mirror it into the manual field so the two paths compose: capture the
+      // in-point by ear, then type or refine the out-point by hand. Raw ms, not
+      // formatTime — that floors to whole seconds and would silently drop up to
+      // 999ms of the position actually captured.
+      djManualStart.value = String(Math.round(positionMs));
+      djShowError('');
+    });
+
+    djMarkOut.addEventListener('click', async () => {
+      if (!djDurationMs || djPendingInMs === null || !djCurrentFilename) return;
+
+      const endMs = estimatedPositionMs();
+      if (endMs <= djPendingInMs) {
+        djShowError('Out-point must be after the in-point');
+        return;
+      }
+
+      const filename = djCurrentFilename;
+      const startMs = djPendingInMs;
+      const saved = await mutateClips(filename, clips => [...clips, { startMs, endMs }]);
+      if (saved) setPendingIn(null);
+    });
+
+    async function addManualClip() {
+      if (!djCurrentFilename) {
+        djShowError('Nothing is playing');
+        return;
+      }
+
+      const startMs = parseTimestamp(djManualStart.value);
+      const endMs = parseTimestamp(djManualEnd.value);
+
+      if (startMs === null) {
+        djShowError('Start must look like 1:23, 1:23.5, 1:02:03, or raw ms');
+        djManualStart.focus();
+        return;
+      }
+      if (endMs === null) {
+        djShowError('End must look like 1:23, 1:23.5, 1:02:03, or raw ms');
+        djManualEnd.focus();
+        return;
+      }
+      if (endMs <= startMs) {
+        djShowError('End must be after start');
+        djManualEnd.focus();
+        return;
+      }
+
+      const filename = djCurrentFilename;
+      if (await mutateClips(filename, clips => [...clips, { startMs, endMs }])) {
+        djManualStart.value = '';
+        djManualEnd.value = '';
+        djManualStart.focus();
+        // Saved either way — the clip is still valid, it just won't cut to the
+        // full length. Warn rather than reject, since the track can be swapped.
+        if (djDurationMs > 0 && endMs > djDurationMs) {
+          djShowError(`Saved, but the clip ends after the track does (${formatTime(djDurationMs)})`);
+        }
+      }
+    }
+
+    djManualAdd.addEventListener('click', addManualClip);
+
+    // Enter from either field submits, so the whole flow stays on the keyboard.
+    for (const input of [djManualStart, djManualEnd]) {
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          addManualClip();
+        }
+      });
+    }
+
+    djClipList.addEventListener('click', async e => {
+      const row = e.target.closest('.dj-clip');
+      if (!row) return;
+
+      const filename = row.dataset.filename;
+      const clipId = row.dataset.clipId;
+      const clips = djClipsByFilename[filename] || [];
+      const clip = clips.find(c => c.id === clipId);
+      if (!clip) return;
+
+      if (e.target.closest('.dj-clip-play')) {
+        // Seek when the clip belongs to the track already playing — a playTrack
+        // there would tear the track down and re-prepare it (and re-broadcast a
+        // track change) just to move the playhead.
+        if (filename === djCurrentFilename) {
+          djSeek(clip.startMs);
+        } else {
+          djPlayTrack(filename, clip.startMs);
+        }
+        return;
+      }
+
+      if (e.target.closest('.dj-clip-del')) {
+        await mutateClips(filename, current => current.filter(c => c.id !== clipId));
+        return;
+      }
+
+      if (e.target.closest('.dj-clip-label')) {
+        const label = prompt('Clip label:', clip.label || '');
+        if (label === null) return;
+        await mutateClips(filename, current =>
+          current.map(c => (c.id === clipId ? { ...c, label: label.trim() } : c))
+        );
+      }
+    });
+
+    djExport.addEventListener('click', async () => {
+      djShowError('');
+      try {
+        const res = await fetch('/admin/clips', { headers: { 'X-API-Key': apiKey } });
+        if (!res.ok) {
+          djShowError('Failed to export clips');
+          return;
+        }
+
+        const data = await res.json();
+        const json = JSON.stringify(data.clips, null, 2);
+
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'clips.json';
+        a.click();
+        URL.revokeObjectURL(url);
+
+        navigator.clipboard?.writeText(json).catch(() => {});
+      } catch (_err) {
+        djShowError('Connection error');
+      }
+    });
+
     async function openDJTab() {
       if (managedTracks.length === 0) await loadManagedTracks();
+      await loadAllClips();
       await refreshDJState();
       renderDJTracks();
+      renderClips();
       startDJPolling();
     }
 

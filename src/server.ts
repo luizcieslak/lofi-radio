@@ -11,6 +11,7 @@ import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
 import { normalizeInPlace } from './audioNormalizer'
+import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
@@ -570,6 +571,48 @@ app.post('/admin/dj/seek', requireAuth, (req: Request, res: Response) => {
 	engine.requestSeek(positionMs)
 
 	res.json({ success: true, positionMs })
+})
+
+/**
+ * Replace the clip markers on a track.
+ * PUT /admin/tracks/:filename/clips
+ * Body: { clips: Clip[] }  — wholesale replace; the client holds the full list.
+ */
+app.put('/admin/tracks/:filename/clips', requireAuth, (req: Request, res: Response) => {
+	const filename = req.params.filename
+	if (!filename) {
+		res.status(400).json({ error: 'Filename required' })
+		return
+	}
+
+	const filepath = path.join(SONGS_DIR, filename)
+	if (!filepath.startsWith(SONGS_DIR)) {
+		res.status(400).json({ error: 'Invalid filename' })
+		return
+	}
+
+	if (!fs.existsSync(filepath)) {
+		res.status(404).json({ error: 'Song not found' })
+		return
+	}
+
+	// req.body is `any`; validateClips narrows from unknown with runtime checks.
+	const result = validateClips(req.body?.clips)
+	if (!result.ok) {
+		res.status(400).json({ error: result.error })
+		return
+	}
+
+	const clips = metadataManager.setClips(filename, result.clips)
+	res.json({ success: true, filename, clips })
+})
+
+/**
+ * All clip markers across the library, keyed by filename (export + UI badges).
+ * GET /admin/clips
+ */
+app.get('/admin/clips', requireAuth, (_req: Request, res: Response) => {
+	res.json({ clips: metadataManager.getAllClips() })
 })
 
 /**

@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as mm from 'music-metadata'
+import type { Clip } from './types'
 
 // Store state inside songs folder so it persists with the volume on Railway
 const SONGS_DIR = path.join(__dirname, '../songs')
@@ -26,6 +27,8 @@ export interface TrackMetadata {
 	spotifyUrl?: string
 	youtubeUrl?: string
 	appleMusicUrl?: string
+	// Marked clip slices for promo-video cutting (campaign branch)
+	clips?: Clip[]
 	// Source tracking
 	extractedFromId3: boolean
 	manuallyEdited: boolean
@@ -178,21 +181,72 @@ class MetadataManager {
 		const existing = this.metadata[filename]
 		if (existing?.durationMs !== undefined) return
 
-		// A track with no entry at all (dropped straight into songs/, or restored
-		// without tracks-meta.json) still needs one written, or the frame walk would
-		// rerun on every play instead of once ever.
 		this.metadata[filename] = {
-			...(existing ?? {
-				title: path.basename(filename, '.mp3').replace(/[-_]/g, ' '),
-				artist: 'Unknown Artist',
-				extractedFromId3: false,
-				manuallyEdited: false,
-			}),
+			...(existing ?? this.blankEntry(filename)),
 			durationMs,
 			lastUpdated: Date.now(),
 		}
 		this.save()
 		console.log(`[MetadataManager] Backfilled duration for ${filename}: ${Math.round(durationMs)}ms`)
+	}
+
+	/**
+	 * Minimal metadata entry for a track that has none — dropped straight into
+	 * songs/, or restored without tracks-meta.json. Without this, automated writers
+	 * (duration backfill, clips) would have nowhere to store their value.
+	 */
+	private blankEntry(filename: string): TrackMetadata {
+		return {
+			title: path.basename(filename, '.mp3').replace(/[-_]/g, ' '),
+			artist: 'Unknown Artist',
+			extractedFromId3: false,
+			manuallyEdited: false,
+			lastUpdated: Date.now(),
+		}
+	}
+
+	/** Clips marked on a track, or [] when none. */
+	getClips(filename: string): Clip[] {
+		return this.metadata[filename]?.clips ?? []
+	}
+
+	/**
+	 * Replace a track's clip list wholesale.
+	 *
+	 * Wholesale rather than add/remove/update: the client always holds the full
+	 * list, so one setter avoids three endpoints and the read-modify-write races
+	 * between them. Validation happens at the route (see `validateClips`).
+	 *
+	 * Like `backfillDuration`, this bypasses `update()` so clip authoring doesn't
+	 * mark a track's title/artist metadata as `manuallyEdited`.
+	 */
+	setClips(filename: string, clips: Clip[]): Clip[] {
+		const entry = { ...(this.metadata[filename] ?? this.blankEntry(filename)), lastUpdated: Date.now() }
+
+		// Drop the key entirely when empty rather than storing `clips: []`, so
+		// clearing a track's clips leaves its metadata as it was before any were
+		// added instead of accumulating empty arrays across the library.
+		if (clips.length > 0) {
+			entry.clips = clips
+		} else {
+			delete entry.clips
+		}
+
+		this.metadata[filename] = entry
+		this.save()
+		console.log(`[MetadataManager] Saved ${clips.length} clip(s) for ${filename}`)
+		return clips
+	}
+
+	/** Every track that has at least one clip, keyed by filename (for export). */
+	getAllClips(): Record<string, Clip[]> {
+		const result: Record<string, Clip[]> = {}
+		for (const [filename, meta] of Object.entries(this.metadata)) {
+			if (meta.clips && meta.clips.length > 0) {
+				result[filename] = meta.clips
+			}
+		}
+		return result
 	}
 
 	/**
