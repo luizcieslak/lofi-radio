@@ -45,3 +45,5 @@ songs-backup/
 
 # Legacy state location (now in songs/.radio-state/)
 src/state/
+# Promo-video test captures (campaign/dj-controls workflow); large binaries, not source.
+recordings/

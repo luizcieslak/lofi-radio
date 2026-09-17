@@ -191,6 +191,19 @@ are dropped with the track on delete. `Clip` is deliberately absent from the pub
 have no use for. Validation lives in a pure, unit-tested
 [src/clipValidation.ts](src/clipValidation.ts) rather than inline in the route.
 
+**Batch rendering.** [scripts/recordClips.ts](scripts/recordClips.ts) turns every marked
+clip into a 1080x1920 MP4 unattended: play at the mark, capture the `cieslak-dev` page
+with Playwright, cut the audio from the source MP3, mux. Audio never comes from the
+capture — Playwright records none, and a capture would carry burst latency, the seek
+artifact, and a second generational loss. Two non-obvious capture details are handled
+there and explained in [docs/video-recording.md](docs/video-recording.md): Playwright
+starts recording at `newContext()` rather than first paint (so the pre-paint lead-in is
+*measured* per render, not hardcoded — it varied 4.4s → 5.08s across runs of the same
+page), and `<astro-dev-toolbar>` sits in frame because it lives outside the page root
+where `?stage` cannot reach it. The script refuses any `RADIO_URL` that is not
+localhost, since every render puts a track on the air. Output goes to `recordings/`
+(gitignored).
+
 > ⚠️ These drive the **single global broadcast**: a jump or seek changes what every
 > listener hears. They exist to audition ~1min clips for promo videos on a local
 > instance. That branch also drops `BURST_LIMIT_BYTES` from 128KB to 8KB (~4.5s →
@@ -249,6 +262,7 @@ lofi-radio/
 │   └── index.html          # Web player UI (player + admin panel)
 ├── scripts/
 │   ├── generatePlaylist.ts # Utility to generate playlist from files
+│   ├── recordClips.ts      # Batch promo-video renderer (campaign branch; local-only)
 │   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
 ├── docs/                   # Project notes / design docs
 │   ├── video-recording.md  # Promo-video workflow (campaign branch)

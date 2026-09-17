@@ -159,6 +159,42 @@ const context = await browser.newContext({
 Set `size` explicitly: video defaults to the viewport scaled into 800x800, or **800x450
 if no viewport is set** — landscape, i.e. the wrong shape for vertical video.
 
+Three things bite on a real capture, all of them handled by
+[scripts/recordClips.ts](../scripts/recordClips.ts):
+
+1. **Recording starts at `newContext()`, not at first paint.** Every capture opens
+   with several seconds of empty background and an unloaded cover box. The lead-in
+   is *not* constant — two runs of the same page measured 4.4s and 5.08s, since it
+   moves with image fetches and dev-server warmth. So record with a handle, then
+   derive the trim from the finished file's own duration rather than a fixed `-ss`:
+
+   ```
+   leadIn = rawDuration - (clipLength + handle)
+   ```
+
+   Wait on the artwork specifically (`img.complete && img.naturalWidth > 0`), not
+   just `networkidle` — the cover *is* the shot.
+
+2. **The Astro dev toolbar is in frame.** `?stage` hides nav, footer, miniplayer and
+   the play button, but `<astro-dev-toolbar>` is injected by the dev server as a
+   sibling of the page root, so page CSS cannot reach it. It renders as a dark pill
+   at the bottom edge of a 1080x1920 capture. Hide it from the harness:
+
+   ```js
+   await context.addInitScript(() => {
+     const style = document.createElement('style')
+     style.textContent = 'astro-dev-toolbar{display:none !important}'
+     document.head.appendChild(style)
+   })
+   ```
+
+3. **Video recording needs a full Chromium.** `chromium_headless_shell` — what a bare
+   `playwright install` may leave you with — cannot record, and fails only at launch.
+
+> **Theme is applied on change.** The player toggles the theme when it *changes*, so
+> setting a track's theme before the page connects leaves the page on its default.
+> When scripting, either set the theme after the page is up, or accept the default.
+
 > **Do the local MP3s match what the server streams?** Yes — the server streams the
 > files in `songs/` frame-by-frame with no transformation at serve time, so a local cut
 > is sample-identical to what a listener hears. The real drift risk is that a *local*
@@ -172,6 +208,33 @@ if no viewport is set** — landscape, i.e. the wrong shape for vertical video.
 >
 > If a track does differ, pull that file from the server rather than re-encoding the
 > local copy to match — another re-encode is another generational loss.
+
+### Batch rendering
+
+Once the marks are in, [scripts/recordClips.ts](../scripts/recordClips.ts) renders them
+all unattended — play at the mark, capture, cut the audio from the source MP3, mux:
+
+```bash
+bun run scripts/recordClips.ts                       # every marked clip
+bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's clips
+bun run scripts/recordClips.ts --clip a1b2c3         # one clip
+bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
+```
+
+Output lands in `recordings/` (gitignored) as
+`<track-slug>-<clip-id>-1080x1920.mp4`. Start with `--dry-run` to see the plan.
+
+Captures happen in real time — a 60s clip takes at least 60s, plus handle and encode —
+so a large batch is genuinely long. A failed clip is reported and the batch continues,
+rather than abandoning the rest.
+
+Each render is verified before being accepted: the output must come out at the expected
+duration and must contain audible audio. The most common failure is a clip marked past
+the end of its track, which yields a short audio slice — the same case the DJ tab flags
+with **⚠**.
+
+> The script refuses to run against anything but `localhost`, because every render puts
+> a track on the air. See [the branch caveats](#branch-caveats).
 
 ## 4. Export the marks
 
