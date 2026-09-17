@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { metadataManager } from './metadataManager'
-import type { Clip } from './types'
+import { type Clip, isTrackTheme } from './types'
 
 /**
- * Covers the `blankEntry` path: clips (and duration backfills) must land even on
- * tracks that have no metadata entry at all — a file dropped straight into
- * songs/, or a restore without tracks-meta.json.
+ * Covers the authoring writers that bypass `update()` — clips and theme — plus
+ * the `blankEntry` path they share: both must land even on tracks with no
+ * metadata entry at all (a file dropped straight into songs/, or a restore
+ * without tracks-meta.json).
  *
  * Uses filenames that cannot collide with the real library, and clears them
  * afterwards so the developer's tracks-meta.json is left as it was found.
@@ -104,5 +105,88 @@ describe('metadataManager clips', () => {
 
 		expect(metadataManager.getClips(filename)).toEqual([])
 		expect(metadataManager.getAllClips()[filename]).toBeUndefined()
+	})
+})
+
+describe('metadataManager theme', () => {
+	test('setTheme creates an entry for a track with no metadata', () => {
+		const filename = testFilename('theme-no-entry')
+		expect(metadataManager.get(filename)).toBeUndefined()
+
+		metadataManager.setTheme(filename, 'dark')
+
+		expect(metadataManager.get(filename)?.theme).toBe('dark')
+		expect(metadataManager.get(filename)?.title).toBeTruthy()
+	})
+
+	test('setTheme overwrites an existing theme', () => {
+		const filename = testFilename('theme-overwrite')
+		metadataManager.setTheme(filename, 'dark')
+		metadataManager.setTheme(filename, 'light')
+
+		expect(metadataManager.get(filename)?.theme).toBe('light')
+	})
+
+	test('setTheme(null) removes the key rather than storing undefined', () => {
+		const filename = testFilename('theme-clear')
+		metadataManager.setTheme(filename, 'dark')
+		metadataManager.setTheme(filename, null)
+
+		const meta = metadataManager.get(filename)
+		// Absent, not present-but-undefined: otherwise memory and the saved JSON
+		// disagree about whether a theme is set (JSON.stringify drops undefined).
+		expect('theme' in (meta ?? {})).toBe(false)
+		expect(meta?.theme).toBeUndefined()
+	})
+
+	test('setTheme preserves existing metadata and clips', () => {
+		const filename = testFilename('theme-preserve')
+		metadataManager.update(filename, { title: 'Real Title', artist: 'Real Artist' })
+		metadataManager.setClips(filename, [clip()])
+		metadataManager.setTheme(filename, 'dark')
+
+		const meta = metadataManager.get(filename)
+		expect(meta?.title).toBe('Real Title')
+		expect(meta?.artist).toBe('Real Artist')
+		expect(meta?.clips).toEqual([clip()])
+		expect(meta?.theme).toBe('dark')
+	})
+
+	test('clearing a theme leaves other fields intact', () => {
+		const filename = testFilename('theme-clear-preserve')
+		metadataManager.update(filename, { title: 'Keep Me' })
+		metadataManager.setTheme(filename, 'light')
+		metadataManager.setTheme(filename, null)
+
+		expect(metadataManager.get(filename)?.title).toBe('Keep Me')
+	})
+
+	test('setTheme marks the track manuallyEdited', () => {
+		const filename = testFilename('theme-manual')
+		metadataManager.setTheme(filename, 'dark')
+		// Unlike clips, a theme is a presentation choice — the same class of edit
+		// as title or cover art.
+		expect(metadataManager.get(filename)?.manuallyEdited).toBe(true)
+	})
+
+	test('deleting a track drops its theme', () => {
+		const filename = testFilename('theme-deleted')
+		metadataManager.setTheme(filename, 'dark')
+		metadataManager.delete(filename)
+
+		expect(metadataManager.get(filename)).toBeUndefined()
+	})
+})
+
+describe('isTrackTheme', () => {
+	test('accepts the two valid themes', () => {
+		expect(isTrackTheme('light')).toBe(true)
+		expect(isTrackTheme('dark')).toBe(true)
+	})
+
+	test('rejects anything else, so a typo cannot reach the player', () => {
+		for (const bad of ['', 'Light', 'DARK', 'auto', 'system', 'blue', null, undefined, 0, 1, {}, ['dark']]) {
+			expect(isTrackTheme(bad)).toBe(false)
+		}
 	})
 })

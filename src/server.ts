@@ -15,6 +15,7 @@ import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
 import { StreamEngine } from './streamEngine'
+import { isTrackTheme, TRACK_THEMES } from './types'
 
 // ============================================================================
 // EXPRESS SERVER
@@ -384,7 +385,9 @@ app.get('/admin/tracks/:filename/metadata', requireAuth, async (req: Request, re
  * Update metadata for a track
  * PATCH /admin/tracks/:filename/metadata
  * Headers: X-API-Key: <your-api-key>
- * Body: { title?, artist?, album?, albumArtUrl?, spotifyUrl?, youtubeUrl?, appleMusicUrl? }
+ * Body: { title?, artist?, album?, albumArtUrl?, theme?, spotifyUrl?, youtubeUrl?, appleMusicUrl? }
+ *
+ * `theme` is 'light' | 'dark', or null to clear it back to "no opinion".
  */
 app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: Response) => {
 	const filename = req.params.filename
@@ -405,8 +408,18 @@ app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: R
 		return
 	}
 
-	const { title, artist, album, albumArtUrl, spotifyUrl, youtubeUrl, appleMusicUrl } = req.body
+	const { title, artist, album, albumArtUrl, theme, spotifyUrl, youtubeUrl, appleMusicUrl } = req.body
 	const updates: Record<string, string | undefined> = {}
+
+	// Unlike the free-text fields, `theme` is a closed union the player branches
+	// on, so an unrecognized value is rejected rather than stored. Validate before
+	// applying anything, so a bad theme doesn't half-apply the other fields.
+	// `null` clears it back to "no opinion"; omitting the key leaves it alone.
+	const clearsTheme = theme === null
+	if (theme !== undefined && !clearsTheme && !isTrackTheme(theme)) {
+		res.status(400).json({ error: `theme must be one of ${TRACK_THEMES.join(', ')}, or null to clear` })
+		return
+	}
 
 	if (title !== undefined) updates.title = title
 	if (artist !== undefined) updates.artist = artist
@@ -416,15 +429,33 @@ app.patch('/admin/tracks/:filename/metadata', requireAuth, (req: Request, res: R
 	if (youtubeUrl !== undefined) updates.youtubeUrl = youtubeUrl
 	if (appleMusicUrl !== undefined) updates.appleMusicUrl = appleMusicUrl
 
-	if (Object.keys(updates).length === 0) {
+	const touchesTheme = theme !== undefined
+	if (Object.keys(updates).length === 0 && !touchesTheme) {
 		res.status(400).json({ error: 'No updates provided' })
 		return
 	}
 
-	const metadata = metadataManager.update(filename, updates)
+	// Theme goes through its own setter because it must be able to REMOVE the
+	// field; see metadataManager.setTheme. Applied first, so that when the request
+	// also carries other fields the `update()` below returns the fully-merged
+	// entry and the response reflects both changes.
+	const afterTheme = touchesTheme ? metadataManager.setTheme(filename, clearsTheme ? null : theme) : null
+
+	// One of the two must have run: the guard above rejected the empty request.
+	const metadata = Object.keys(updates).length > 0 ? metadataManager.update(filename, updates) : afterTheme
 
 	// Rescan to update track info in playlist
 	playlistManager.rescan()
+
+	// rescan() rebuilds the playlist, but the engine holds its own snapshot of the
+	// playing Track taken at track start. Without this, an edit to the track that
+	// is playing right now would show up on /api/tracks while /now-playing (and
+	// its SSE stream, and therefore the player) kept serving the stale values
+	// until the next track change.
+	const refreshed = playlistManager.getTracks().find(track => path.basename(track.path) === filename)
+	if (refreshed) {
+		engine.refreshNowPlayingTrack(refreshed)
+	}
 
 	res.json({
 		success: true,

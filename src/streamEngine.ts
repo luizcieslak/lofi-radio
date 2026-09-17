@@ -892,6 +892,26 @@ class StreamEngine {
 		return this.nowPlaying
 	}
 
+	/**
+	 * Re-point the now-playing snapshot at a fresh Track object for the same file.
+	 *
+	 * `nowPlaying.track` is captured when a track starts and is never re-read, so
+	 * a metadata edit mid-playback (title, cover art, theme) left `/now-playing`
+	 * and its SSE stream serving the old values until the next track change —
+	 * while `/api/tracks`, which reads the playlist live, showed the new ones.
+	 * Callers that mutate metadata call this to keep the two consistent.
+	 *
+	 * Matched on path, not id: `rescan()` renumbers ids positionally, so an id
+	 * comparison would spuriously match a different file after any reorder.
+	 * `startedAt` is preserved — the edit doesn't restart the track.
+	 */
+	refreshNowPlayingTrack(track: Track): void {
+		if (!this.nowPlaying || this.nowPlaying.track.path !== track.path) return
+
+		this.nowPlaying = { track, startedAt: this.nowPlaying.startedAt }
+		this.broadcastMetadata()
+	}
+
 	/** Live playhead + track length, for the DJ scrub bar. */
 	getPlayback(): { positionMs: number; durationMs: number } {
 		return {

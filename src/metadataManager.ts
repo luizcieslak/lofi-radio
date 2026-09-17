@@ -10,7 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as mm from 'music-metadata'
-import type { Clip } from './types'
+import type { Clip, TrackTheme } from './types'
 
 // Store state inside songs folder so it persists with the volume on Railway
 const SONGS_DIR = path.join(__dirname, '../songs')
@@ -23,6 +23,8 @@ export interface TrackMetadata {
 	album?: string
 	albumArtUrl?: string
 	durationMs?: number
+	/** Preferred player styling while this track plays; undefined = player default. */
+	theme?: TrackTheme
 	// Platform links
 	spotifyUrl?: string
 	youtubeUrl?: string
@@ -203,6 +205,38 @@ class MetadataManager {
 			manuallyEdited: false,
 			lastUpdated: Date.now(),
 		}
+	}
+
+	/**
+	 * Set or clear a track's preferred player theme.
+	 *
+	 * Separate from `update()` for the same reason `setClips` is: it must be able
+	 * to remove the field. `update()` spreads its argument, so passing
+	 * `theme: undefined` there would leave the key present-but-undefined —
+	 * JSON.stringify drops it on save, but it lingers in memory until the next
+	 * load, so disk and memory would disagree about whether a theme is set.
+	 *
+	 * Unlike `setClips`, this DOES mark the track `manuallyEdited`: the theme is
+	 * a deliberate presentation choice about the track, the same kind of edit as
+	 * its title or cover art, not automated authoring data.
+	 */
+	setTheme(filename: string, theme: TrackTheme | null): TrackMetadata {
+		const entry = {
+			...(this.metadata[filename] ?? this.blankEntry(filename)),
+			manuallyEdited: true,
+			lastUpdated: Date.now(),
+		}
+
+		if (theme === null) {
+			delete entry.theme
+		} else {
+			entry.theme = theme
+		}
+
+		this.metadata[filename] = entry
+		this.save()
+		console.log(`[MetadataManager] Set theme for ${filename}: ${theme ?? 'cleared'}`)
+		return entry
 	}
 
 	/** Clips marked on a track, or [] when none. */

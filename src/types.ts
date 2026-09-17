@@ -5,6 +5,21 @@ export interface Mp3FrameHeader {
 	frameDurationMs: number
 }
 
+/**
+ * Which way a player should style itself while this track is playing.
+ *
+ * A closed union rather than `string` so a typo can't reach the player as an
+ * unstyleable value, and so `undefined` stays meaningful: absent = "no opinion,
+ * use your own default", which is distinct from an explicit 'light'.
+ */
+export type TrackTheme = 'light' | 'dark'
+
+export const TRACK_THEMES: readonly TrackTheme[] = ['light', 'dark']
+
+export function isTrackTheme(value: unknown): value is TrackTheme {
+	return typeof value === 'string' && TRACK_THEMES.some(theme => theme === value)
+}
+
 export interface Track {
 	id: string
 	path: string
@@ -13,6 +28,8 @@ export interface Track {
 	album?: string
 	albumArtUrl?: string
 	durationMs?: number
+	/** Preferred player styling for this track; undefined = player's default. */
+	theme?: TrackTheme
 	// Platform links
 	spotifyUrl?: string
 	youtubeUrl?: string

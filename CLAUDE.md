@@ -117,6 +117,7 @@ interface Track {
   album?: string;
   albumArtUrl?: string;   // Public URL to album cover image
   durationMs?: number;    // Track duration in milliseconds
+  theme?: 'light' | 'dark'; // Preferred player styling; absent = player default
 
   // Platform links (external streaming services)
   spotifyUrl?: string;    // https://open.spotify.com/track/...
@@ -138,6 +139,19 @@ Tracks can include links to external streaming platforms, enabling features like
 **Album Covers:**
 Cover artwork is served via CDN URLs for optimal performance. The frontend can display album art using the `albumArtUrl` field.
 
+**Per-track theme.**
+`theme` lets a track ask the player to render light or dark — set per track so the look
+can suit its cover art while recording promo videos. It is a closed union validated at
+the route (`isTrackTheme` in [src/types.ts](src/types.ts)), not free text, because the
+player branches on the value; `null` in a PATCH clears it, and an unrecognized value is
+a 400. Unlike `Clip`, it IS on the public `Track` and served by `/api/tracks` and
+`/now-playing`, since the consuming player is the whole point. Written through
+`metadataManager.setTheme` rather than `update()` because it must be able to *remove*
+the field — spreading `theme: undefined` through `update()` would leave the key
+present-but-undefined, which `JSON.stringify` drops on save but which lingers in memory
+until the next load, so disk and memory would disagree. See
+[docs/video-recording.md](docs/video-recording.md).
+
 #### 6. **Express Server** ([src/server.ts](src/server.ts))
 
 REST API and web server with endpoints:
@@ -156,6 +170,15 @@ REST API and web server with endpoints:
 - `POST /admin/dj/seek` — `{ positionMs }` seek within the current track
 - `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's clip markers (wholesale)
 - `GET /admin/clips` — all clip markers keyed by filename (JSON export + UI badges)
+
+**Video theme.** The DJ tab's *Video theme* row sets the playing track's `theme`
+(light / dark / Auto-to-clear) via the metadata PATCH above. The click is optimistic and
+rolls back if the write fails; polls are suppressed for the in-flight track only
+(`djThemeWriteFor`) so a 5s refresh can't clobber an unconfirmed click, while an
+out-of-band change still gets adopted on the next poll. Consumed by the `cieslak-dev`
+player, which toggles the `dark` class on `<html>` **on change only** — so the site's own
+theme toggle keeps working and a manual click stands until the next track wants
+something different.
 
 **Clip markers.** For picking the ~1min slice of each song to feature, the DJ tab
 marks in/out points (multiple per track) — either from the live playhead via
@@ -180,7 +203,7 @@ have no use for. Validation lives in a pure, unit-tested
 - `GET /admin/songs` - List all songs
 - `DELETE /admin/songs/:filename` - Delete a song (auto-skips if currently playing)
 - `GET /admin/tracks/:filename/metadata` - Get track metadata
-- `PATCH /admin/tracks/:filename/metadata` - Update track metadata
+- `PATCH /admin/tracks/:filename/metadata` - Update track metadata (incl. `theme`; refreshes the engine's now-playing snapshot — see below)
 - `POST /admin/rescan` - Rescan songs directory
 
 #### 7. **Web Player** ([public/index.html](public/index.html))
@@ -228,6 +251,8 @@ lofi-radio/
 │   ├── generatePlaylist.ts # Utility to generate playlist from files
 │   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
 ├── docs/                   # Project notes / design docs
+│   ├── video-recording.md  # Promo-video workflow (campaign branch)
+│   └── deployment/
 ├── package.json
 ├── tsconfig.json
 ├── biome.json              # Code formatter/linter config
@@ -374,6 +399,21 @@ If you need on-demand playback (start from beginning, pause, rewind), consider b
 
    - Resumes from start of saved track (not mid-song)
    - Frame-precise resume not yet implemented
+
+> **Resolved:** _Metadata edits to the playing track didn't reach `/now-playing`._
+> `StreamEngine.nowPlaying.track` is a snapshot captured when a track starts and was
+> never re-read, while `/api/tracks` reads the playlist live. So editing the **currently
+> playing** track left the two endpoints disagreeing until the next track change:
+> `/api/tracks` showed the new title/cover/theme, `/now-playing` and its SSE stream (and
+> therefore every player) kept serving the old ones. Cosmetic for a title; fatal for
+> `theme`, whose entire purpose is to reach the player promptly. Fixed with
+> `StreamEngine.refreshNowPlayingTrack(track)`, called from the metadata PATCH route
+> after its `rescan()`: it re-points the snapshot at the fresh `Track` and rebroadcasts
+> metadata, preserving `startedAt` so the track doesn't appear to restart. Matched on
+> `path`, not `id` — `rescan()` renumbers ids positionally, so an id comparison would
+> spuriously match a different file after any reorder. Verified: the SSE stream emits a
+> second event carrying the new value within ~1s of the PATCH, and the playhead keeps
+> advancing across it.
 
 > **Resolved:** _Heterogeneous library → cross-browser decode error at track boundaries._ Every track is now normalized to a single canonical format — **44100 Hz, stereo, MPEG1 Layer III (libmp3lame VBR V0)** — so the sample rate never changes at a boundary and the single browser decode session no longer throws `MediaError`. New uploads are transcoded on the way in ([src/audioNormalizer.ts](src/audioNormalizer.ts), wired into `POST /admin/upload`); the existing library is brought up to spec by the one-time offline batch normalizer in `~/clawd/lofi-radio-tools` (`normalize-tracks.ts` + `update-normalized-tracks.ts`). Both re-encode **only** files whose sample rate ≠ 44100 Hz, leaving already-canonical files untouched.
 

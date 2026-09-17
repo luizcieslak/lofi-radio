@@ -715,6 +715,55 @@
       font-size: 10px;
     }
 
+    .dj-theme-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .dj-theme-label {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+      flex-shrink: 0;
+    }
+
+    .dj-theme-choices {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .dj-theme-btn {
+      padding: 6px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 6px;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, border-color 0.2s, color 0.2s;
+    }
+
+    .dj-theme-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+    }
+
+    .dj-theme-btn.active {
+      background: rgba(102, 126, 234, 0.3);
+      border-color: #667eea;
+      color: #fff;
+    }
+
+    .dj-theme-btn:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
     .dj-clips {
       background: rgba(255, 255, 255, 0.05);
       border-radius: 10px;
@@ -1182,6 +1231,14 @@
               <button class="dj-manual-add" id="djManualAdd">+ Add</button>
             </div>
             <div class="dj-manual-hint">Accepts <code>m:ss</code>, <code>m:ss.f</code>, <code>h:mm:ss</code>, or raw milliseconds</div>
+            <div class="dj-theme-row">
+              <span class="dj-theme-label">Video theme</span>
+              <div class="dj-theme-choices" id="djThemeChoices">
+                <button class="dj-theme-btn" data-theme="light">☀ Light</button>
+                <button class="dj-theme-btn" data-theme="dark">🌙 Dark</button>
+                <button class="dj-theme-btn" data-theme="">Auto</button>
+              </div>
+            </div>
             <div class="dj-error" id="djError"></div>
           </div>
 
@@ -2062,6 +2119,7 @@
     const djTrackList = document.getElementById('djTrackList');
     const djSearch = document.getElementById('djSearch');
     const djError = document.getElementById('djError');
+    const djThemeChoices = document.getElementById('djThemeChoices');
 
     // Playhead is extrapolated from the last server reading plus wall-clock, so
     // the bar animates smoothly without polling several times a second.
@@ -2072,6 +2130,13 @@
     let djAnchorAt = 0;
     let djDurationMs = 0;
     let djCurrentFilename = null;
+    // Theme of the track currently playing, held locally so a click renders
+    // immediately instead of waiting up to 5s for the next /now-playing poll to
+    // confirm it. `null` means "no opinion" — the player picks its own default.
+    let djCurrentTheme = null;
+    // Filename of an in-flight theme write, or null. While set, polls leave
+    // djCurrentTheme alone so the optimistic value isn't clobbered mid-request.
+    let djThemeWriteFor = null;
 
     function formatTime(ms) {
       if (!Number.isFinite(ms) || ms < 0) ms = 0;
@@ -2083,6 +2148,57 @@
 
     function djShowError(message) {
       djError.textContent = message || '';
+    }
+
+    function renderTheme() {
+      const active = djCurrentTheme || '';
+      for (const btn of djThemeChoices.querySelectorAll('.dj-theme-btn')) {
+        btn.classList.toggle('active', btn.dataset.theme === active);
+        // Nothing playing means no track to attach a theme to.
+        btn.disabled = !djCurrentFilename;
+      }
+    }
+
+    async function setTrackTheme(theme) {
+      if (!djCurrentFilename) return;
+      djShowError('');
+
+      const filename = djCurrentFilename;
+      const previous = djCurrentTheme;
+      // Optimistic: reflect the click now, roll back if the server rejects it.
+      djCurrentTheme = theme || null;
+      djThemeWriteFor = filename;
+      renderTheme();
+
+      try {
+        const res = await fetch(`/admin/tracks/${encodeURIComponent(filename)}/metadata`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+          // null clears the field; a bare theme string sets it.
+          body: JSON.stringify({ theme: theme || null })
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          // Only roll back if we're still on the track we wrote for — the track
+          // can change mid-request, and reverting then would show the old
+          // track's theme against the new track's name.
+          if (djCurrentFilename === filename) {
+            djCurrentTheme = previous;
+            renderTheme();
+          }
+          djShowError(body.error || 'Failed to save theme');
+        }
+      } catch (_err) {
+        if (djCurrentFilename === filename) {
+          djCurrentTheme = previous;
+          renderTheme();
+        }
+        djShowError('Connection error');
+      } finally {
+        // Release the poll suppression only if no newer write superseded ours.
+        if (djThemeWriteFor === filename) djThemeWriteFor = null;
+      }
     }
 
     function estimatedPositionMs() {
@@ -2109,6 +2225,9 @@
           djNowArtist.textContent = '—';
           djScrub.disabled = true;
           djDurationMs = 0;
+          djCurrentFilename = null;
+          djCurrentTheme = null;
+          renderTheme();
           return;
         }
 
@@ -2127,6 +2246,17 @@
         djDuration.textContent = formatTime(djDurationMs);
         renderPlayhead();
         renderDJTracks();
+
+        // The server is authoritative for the playing track's theme — EXCEPT
+        // while one of our own writes is in flight, when the poll would briefly
+        // read back the pre-click value and make the button flicker. Keyed on
+        // filename so a write for the outgoing track can't suppress the incoming
+        // one's value. Note `null` can't signal "no pending write": it is a real
+        // value here, the one Auto sets.
+        if (djThemeWriteFor !== djCurrentFilename) {
+          djCurrentTheme = data.track.theme || null;
+        }
+        renderTheme();
 
         // The track changed under us: a half-marked in-point belongs to the old
         // track, so drop it rather than let Mark Out pair it with a new track.
@@ -2245,6 +2375,12 @@
     });
 
     djSearch.addEventListener('input', renderDJTracks);
+
+    djThemeChoices.addEventListener('click', e => {
+      const button = e.target.closest('.dj-theme-btn');
+      // dataset.theme is '' on the Auto button, which clears the field.
+      if (button && !button.disabled) setTrackTheme(button.dataset.theme);
+    });
 
     // Update the label live while dragging, but only hit the API on release so a
     // drag doesn't fire a request per pixel.
