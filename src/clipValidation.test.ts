@@ -37,7 +37,21 @@ describe('parseTimestamp', () => {
 	})
 
 	test('rejects unparseable input rather than guessing', () => {
-		for (const bad of ['', '   ', 'abc', '1:', ':30', '1:2:3:4', '1:60', '1:99', '-5', '-1:30', '1.2.3', '1:ab', '2:-3']) {
+		for (const bad of [
+			'',
+			'   ',
+			'abc',
+			'1:',
+			':30',
+			'1:2:3:4',
+			'1:60',
+			'1:99',
+			'-5',
+			'-1:30',
+			'1.2.3',
+			'1:ab',
+			'2:-3',
+		]) {
 			expect(parseTimestamp(bad)).toBeNull()
 		}
 	})

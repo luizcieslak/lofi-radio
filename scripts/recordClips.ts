@@ -85,6 +85,9 @@ const SETTLE_MS = 1500
 /** A cover that never loads leaves a blank square in frame — fail instead. */
 const CONTENT_TIMEOUT_MS = 15_000
 
+/** Ceiling on the initial navigation; the page is local, so this is generous. */
+const NAVIGATION_TIMEOUT_MS = 30_000
+
 /** The radio needs a moment to actually be streaming the new position. */
 const ON_AIR_SETTLE_MS = 1200
 
@@ -97,6 +100,25 @@ const ON_AIR_SETTLE_MS = 1200
  * instead of hanging an unattended batch forever.
  */
 const CLOSE_TIMEOUT_MS = 60_000
+
+/**
+ * Ceiling on the whole in-browser phase: navigate, await artwork, play, hold for
+ * the capture, finalize.
+ *
+ * `CLOSE_TIMEOUT_MS` alone is not enough. Every await in that phase is a protocol
+ * round-trip to the browser, so when the capture encoder wedges, the *page* stops
+ * responding and the script hangs at whichever call it happens to be in — observed
+ * in a 15-clip batch stalling 29 minutes inside `page.waitForTimeout`, well before
+ * `context.close()` was ever reached. Bounding only the close guards one point on
+ * a path where any point can hang; this bounds the path.
+ */
+const CAPTURE_TIMEOUT_MS = 90_000
+
+/**
+ * Ceiling on browser teardown. `browser.close()` is itself a protocol call, so the
+ * very deadlock this recovers from can hang the recovery; past it we SIGKILL.
+ */
+const TEARDOWN_TIMEOUT_MS = 15_000
 
 /**
  * Ceiling on any single ffmpeg/ffprobe invocation. Encoding a 60s 1080x1920 clip
@@ -318,6 +340,73 @@ async function nowPlayingPath(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 /**
+ * Last-resort teardown for a browser that will not close.
+ *
+ * `browser.close()` is a protocol call, so the deadlock it is meant to recover from
+ * can hang the recovery itself, and Playwright's `Browser` exposes no pid
+ * (`process()` is on `BrowserServer`; `launchServer` + `connect` fails under Bun's
+ * ws client). The capture directory is not in the browser's argv either -- the
+ * encoder is fed over `pipe:0` -- so the processes are matched by the browser
+ * binary path Playwright launched, restricted to children of this process so a
+ * concurrent run or an unrelated Chromium is never touched.
+ */
+async function killStuckCapture(): Promise<void> {
+	const { chromium } = await import('playwright')
+	// The installed-browsers root, e.g. ~/.cache/ms-playwright -- shared by the
+	// browser build and the bundled ffmpeg that encodes the capture.
+	const browsersRoot = path.dirname(path.dirname(path.dirname(chromium.executablePath())))
+	try {
+		const { stdout } = await run('pgrep', ['-f', browsersRoot], 10_000)
+		const pids = stdout
+			.split('\n')
+			.map(line => Number(line.trim()))
+			.filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
+		for (const pid of await ownDescendants(pids)) {
+			try {
+				process.kill(pid, 'SIGKILL')
+			} catch {
+				// Already gone; nothing to reap.
+			}
+		}
+	} catch {
+		// pgrep exits 1 when nothing matches, which is the good case.
+	}
+}
+
+/**
+ * Narrow `pids` to those descended from this process, so killing a wedged capture
+ * cannot take down a browser this script did not start.
+ */
+async function ownDescendants(pids: number[]): Promise<number[]> {
+	if (pids.length === 0) return []
+	const parents = new Map<number, number>()
+	try {
+		const { stdout } = await run('ps', ['-eo', 'pid=,ppid='], 10_000)
+		for (const line of stdout.split('\n')) {
+			const fields = line.trim().split(/\s+/)
+			if (fields.length < 2) continue
+			const pid = Number(fields[0])
+			const ppid = Number(fields[1])
+			if (Number.isInteger(pid) && Number.isInteger(ppid)) parents.set(pid, ppid)
+		}
+	} catch {
+		// Without the process table there is no safe way to attribute these.
+		return []
+	}
+	const isOurs = (pid: number): boolean => {
+		// Walk up to init; stop on a cycle or a pid that has left the table.
+		for (let current = pid, hops = 0; hops < 64; hops++) {
+			const parent = parents.get(current)
+			if (parent === undefined || parent <= 1) return false
+			if (parent === process.pid) return true
+			current = parent
+		}
+		return false
+	}
+	return pids.filter(isOurs)
+}
+
+/**
  * Record the page for `seconds`, returning the path to the raw silent video.
  *
  * Playwright's own video file is written on `context.close()`, so the path is only
@@ -327,7 +416,14 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 	// Imported lazily so `--dry-run` and `--help` work without Playwright installed.
 	const { chromium } = await import('playwright')
 
-	const browser = await chromium.launch()
+	/**
+	 * `channel: 'chromium'` is load-bearing, not cosmetic. A bare `chromium.launch()`
+	 * starts `chromium_headless_shell`, which cannot record video: it produces a
+	 * 0-byte .webm and leaves its encoder blocked on `pipe:0`, which then deadlocks
+	 * `context.close()`. That was the "intermittent encoder flake" seen throughout
+	 * this workflow's testing. Only this channel selects the full browser.
+	 */
+	const browser = await chromium.launch({ channel: 'chromium' })
 	const context = await browser.newContext({
 		viewport: { width: WIDTH, height: HEIGHT },
 		recordVideo: { dir: outDir, size: { width: WIDTH, height: HEIGHT } },
@@ -350,49 +446,74 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 	})
 
 	try {
-		const page = await context.newPage()
-		await page.goto(`${SITE_URL}/en/radio/?${PAGE_FLAGS}`, { waitUntil: 'networkidle' })
-
-		// Wait for the artwork itself, not merely the document. The cover IS the
-		// shot; recording while it is still fetching yields an empty square.
-		await page.waitForFunction(
-			() => {
-				const images = [...document.querySelectorAll('img')]
-				return images.length > 0 && images.every(img => img.complete && img.naturalWidth > 0)
-			},
-			null,
-			{ timeout: CONTENT_TIMEOUT_MS },
-		)
-		await page.waitForTimeout(SETTLE_MS)
-
-		// Start playback so the page is in its playing state. In stage mode the
-		// button is transparent rather than removed, so it still works and still
-		// stays out of frame.
-		await page.evaluate(() => {
-			const buttons = [...document.querySelectorAll('button')]
-			const playButton = buttons.find(button =>
-				/play|tocar|listen/i.test(button.getAttribute('aria-label') ?? button.textContent ?? ''),
-			)
-			playButton?.click()
-		})
-
-		await page.waitForTimeout(seconds * 1000)
-
 		/**
-		 * `context.close()` flushes and finalizes the video, and it can hang forever.
-		 *
-		 * Observed in testing: Playwright's ffmpeg encoder sat blocked reading
-		 * `pipe:0` with a 0-byte .webm and never returned, deadlocking the close for
-		 * 20+ minutes. It is intermittent — the same clip rendered fine on later
-		 * attempts — so it cannot be avoided by validating inputs. Without a bound
-		 * here, one bad render hangs an unattended batch indefinitely instead of
-		 * failing that clip and moving on.
+		 * The entire browser phase runs under one deadline. A wedged encoder makes
+		 * the page unresponsive, and then *any* of these awaits can hang forever --
+		 * they are all protocol round-trips, not local sleeps. The timeout rejects
+		 * this promise while the hung call stays pending in the background; the
+		 * `finally` below is what actually kills it.
 		 */
+		const capture = async (): Promise<void> => {
+			const page = await context.newPage()
+			/**
+			 * `domcontentloaded`, not `networkidle`. The radio page holds an SSE
+			 * metadata stream and an audio stream open by design, so the network never
+			 * reliably goes quiet for the 500ms `networkidle` requires -- it only
+			 * passes when those happen to lull, and it timed out on two clips of a
+			 * 15-clip batch. Readiness for the shot is established below by waiting on
+			 * the artwork itself, which is the thing that must actually be painted.
+			 */
+			await page.goto(`${SITE_URL}/en/radio/?${PAGE_FLAGS}`, {
+				waitUntil: 'domcontentloaded',
+				timeout: NAVIGATION_TIMEOUT_MS,
+			})
+
+			// Wait for the artwork itself, not merely the document. The cover IS the
+			// shot; recording while it is still fetching yields an empty square.
+			await page.waitForFunction(
+				() => {
+					const images = [...document.querySelectorAll('img')]
+					return images.length > 0 && images.every(img => img.complete && img.naturalWidth > 0)
+				},
+				null,
+				{ timeout: CONTENT_TIMEOUT_MS },
+			)
+			await page.waitForTimeout(SETTLE_MS)
+
+			// Start playback so the page is in its playing state. In stage mode the
+			// button is transparent rather than removed, so it still works and still
+			// stays out of frame.
+			await page.evaluate(() => {
+				const buttons = [...document.querySelectorAll('button')]
+				const playButton = buttons.find(button =>
+					/play|tocar|listen/i.test(button.getAttribute('aria-label') ?? button.textContent ?? ''),
+				)
+				playButton?.click()
+			})
+
+			await page.waitForTimeout(seconds * 1000)
+
+			/**
+			 * `context.close()` flushes and finalizes the video, so the file only
+			 * exists after it returns -- and it can hang forever. Playwright's ffmpeg
+			 * encoder has been seen blocked reading `pipe:0` with a 0-byte .webm,
+			 * never returning. It is intermittent (the same clip renders fine on a
+			 * retry), so it cannot be avoided by validating inputs. Its own bound is
+			 * kept under the outer one so a close-specific stall still names itself.
+			 */
+			await withTimeout(
+				context.close(),
+				CLOSE_TIMEOUT_MS,
+				`Playwright did not finalize the video within ${CLOSE_TIMEOUT_MS / 1000}s ` +
+					'(the encoder can deadlock; this render is lost, the batch continues)',
+			)
+		}
+
 		await withTimeout(
-			context.close(),
-			CLOSE_TIMEOUT_MS,
-			`Playwright did not finalize the video within ${CLOSE_TIMEOUT_MS / 1000}s ` +
-				'(the encoder can deadlock; this render is lost, the batch continues)',
+			capture(),
+			CAPTURE_TIMEOUT_MS,
+			`Playwright did not finish the capture within ${CAPTURE_TIMEOUT_MS / 1000}s ` +
+				'(the encoder can deadlock and freeze the page; this render is lost, the batch continues)',
 		)
 
 		// Playwright names the file itself; the directory is per-render, so the
@@ -409,9 +530,20 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 
 		return videoPath
 	} finally {
-		// Always reachable, including after a close() timeout above — this is what
-		// actually tears down the stuck encoder process so the next clip can run.
-		await browser.close().catch(() => {})
+		/**
+		 * Always reachable, including after a timeout above -- this is what tears
+		 * down the stuck browser and its encoder so the next clip can run.
+		 *
+		 * `browser.close()` is itself a protocol call, so a deadlock deep enough to
+		 * trip the timeouts above can hang the cleanup too. Bound it, then SIGKILL
+		 * the process outright: leaking a wedged Chromium would leave the encoder
+		 * holding the capture directory and poison every remaining clip.
+		 */
+		try {
+			await withTimeout(browser.close(), TEARDOWN_TIMEOUT_MS, 'browser teardown timed out')
+		} catch {
+			await killStuckCapture()
+		}
 	}
 }
 
@@ -674,12 +806,41 @@ async function preflight(): Promise<void> {
 		throw new Error(`the site at ${SITE_URL} is not reachable (${detail}) — it is the page being filmed`)
 	}
 
-	const { chromium } = await import('playwright')
-	const executable = chromium.executablePath()
-	if (executable.includes('headless_shell')) {
+	/**
+	 * Check the radio too, not just the site. They are separate servers, and when
+	 * only the radio was down the site check still passed -- the run then failed
+	 * with a bare connection error naming the site URL, which pointed diagnosis at
+	 * the wrong service. Every render drives this server to put a track on air.
+	 */
+	try {
+		const response = await fetch(`${RADIO_URL}/status`)
+		if (!response.ok) throw new Error(String(response.status))
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
 		throw new Error(
-			`Playwright resolved to ${executable}, which cannot record video. ` +
-				'Install the full browser with `npx playwright install chromium`.',
+			`the radio server at ${RADIO_URL} is not reachable (${detail}) — ` +
+				'it supplies the audio and is what each render puts on air',
+		)
+	}
+
+	/**
+	 * Verify the recording browser by launching it, not by inspecting
+	 * `chromium.executablePath()`.
+	 *
+	 * That path reports the full Chromium even when `launch()` would actually start
+	 * `chromium_headless_shell` -- so the old check passed while the real capture ran
+	 * on the binary that cannot record. Launching the exact channel the capture uses
+	 * is the only check that cannot drift from it.
+	 */
+	const { chromium } = await import('playwright')
+	try {
+		const probe = await chromium.launch({ channel: 'chromium' })
+		await probe.close()
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		throw new Error(
+			`could not launch the "chromium" channel, which is the only build that records video (${detail}). ` +
+				'Install it with `npx playwright install chromium`.',
 		)
 	}
 }

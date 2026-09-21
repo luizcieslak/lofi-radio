@@ -813,6 +813,7 @@
     }
 
     .dj-clip-play,
+    .dj-clip-edit,
     .dj-clip-del {
       border: none;
       border-radius: 5px;
@@ -827,9 +828,66 @@
       color: #4ade80;
     }
 
+    .dj-clip-edit {
+      background: rgba(102, 126, 234, 0.25);
+      color: #a5b4fc;
+    }
+
     .dj-clip-del {
       background: rgba(255, 107, 107, 0.2);
       color: #ff6b6b;
+    }
+
+    /* Editing reuses the row's box so the list doesn't reflow on edit; the
+       inputs are narrower than .dj-manual-input because two of them plus two
+       buttons have to fit the same width one range + label occupied. */
+    .dj-clip.editing {
+      gap: 6px;
+      border: 1px solid rgba(102, 126, 234, 0.5);
+    }
+
+    .dj-clip-edit-input {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 6px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 5px;
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .dj-clip-edit-input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .dj-clip-edit-sep {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+      flex-shrink: 0;
+    }
+
+    .dj-clip-save,
+    .dj-clip-cancel {
+      border: none;
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .dj-clip-save {
+      background: rgba(74, 222, 128, 0.2);
+      color: #4ade80;
+    }
+
+    .dj-clip-cancel {
+      background: rgba(255, 255, 255, 0.12);
+      color: rgba(255, 255, 255, 0.7);
     }
 
     .dj-clip-range {
@@ -2427,6 +2485,10 @@
     // the "has clips" badges in the picker. Refreshed after every mutation.
     let djClipsByFilename = {};
     let djPendingInMs = null;
+    // Id of the clip whose row is currently swapped into its inline editor, or
+    // null. At most one editor is open at a time — the list is short and a second
+    // open editor only adds ways to lose unsaved input.
+    let djEditingClipId = null;
 
     function currentClips() {
       return djCurrentFilename ? (djClipsByFilename[djCurrentFilename] || []) : [];
@@ -2513,6 +2575,12 @@
       const filename = djCurrentFilename;
       djClipCount.textContent = clips.length ? `(${clips.length})` : '';
 
+      // An editor open on a clip that no longer exists (deleted, or the track
+      // changed under us) has nothing to save into, so drop it.
+      if (djEditingClipId && !clips.some(c => c.id === djEditingClipId)) {
+        djEditingClipId = null;
+      }
+
       if (!filename) {
         djClipList.innerHTML = '<div class="dj-empty">No track playing</div>';
       } else if (clips.length === 0) {
@@ -2523,17 +2591,45 @@
           // a frame walk on the request path), so flag it here instead — a clip
           // past the end silently produces a short or empty cut in ffmpeg.
           const overruns = djDurationMs > 0 && clip.endMs > djDurationMs;
+          const rowAttrs = `data-filename="${escapeAttr(filename)}" data-clip-id="${escapeAttr(clip.id)}"`;
+
+          if (clip.id === djEditingClipId) {
+            // Seeded with raw ms, not formatTime — formatTime floors to whole
+            // seconds, so opening and saving an editor without touching it would
+            // silently shave up to 999ms off each end of the clip.
+            return `
+          <div class="dj-clip editing" ${rowAttrs}>
+            <input type="text" class="dj-clip-edit-input" data-edit="start" value="${escapeAttr(String(clip.startMs))}" autocomplete="off" aria-label="Clip start (m:ss or milliseconds)">
+            <span class="dj-clip-edit-sep">→</span>
+            <input type="text" class="dj-clip-edit-input" data-edit="end" value="${escapeAttr(String(clip.endMs))}" autocomplete="off" aria-label="Clip end (m:ss or milliseconds)">
+            <button class="dj-clip-save" title="Save timestamps">✓</button>
+            <button class="dj-clip-cancel" title="Cancel">✕</button>
+          </div>
+        `;
+          }
+
           return `
-          <div class="dj-clip${overruns ? ' overruns' : ''}" data-filename="${escapeAttr(filename)}" data-clip-id="${escapeAttr(clip.id)}">
+          <div class="dj-clip${overruns ? ' overruns' : ''}" ${rowAttrs}>
             <button class="dj-clip-play" title="Play from clip start">▶</button>
             <span class="dj-clip-range">${formatTime(clip.startMs)}–${formatTime(clip.endMs)}</span>
             <span class="dj-clip-dur">${((clip.endMs - clip.startMs) / 1000).toFixed(1)}s</span>
             ${overruns ? `<span class="dj-clip-warn" title="Ends after the track does (${formatTime(djDurationMs)})">⚠</span>` : ''}
             <span class="dj-clip-label" title="Click to edit label">${clip.label ? escapeHtml(clip.label) : '<em>+ label</em>'}</span>
+            <button class="dj-clip-edit" title="Edit timestamps">✏️</button>
             <button class="dj-clip-del" title="Delete clip">🗑</button>
           </div>
         `;
         }).join('');
+
+        // Focus the start field when an editor has just been opened, so the flow
+        // stays on the keyboard (type, Tab, type, Enter).
+        if (djEditingClipId) {
+          const startInput = djClipList.querySelector('.dj-clip.editing [data-edit="start"]');
+          if (startInput) {
+            startInput.focus();
+            startInput.select();
+          }
+        }
       }
 
       renderMarkers();
@@ -2660,6 +2756,49 @@
       });
     }
 
+    /**
+     * Read the open editor's two fields, validate, and persist. Mirrors
+     * addManualClip's checks — the same two timestamps, so the same rules — but
+     * writes back onto an existing clip by id (preserving its label; the PUT
+     * route keeps any id it's given) instead of appending a new one.
+     */
+    async function saveClipEdit(row, filename, clipId) {
+      const startMs = parseTimestamp(row.querySelector('[data-edit="start"]').value);
+      const endMs = parseTimestamp(row.querySelector('[data-edit="end"]').value);
+
+      if (startMs === null) {
+        djShowError('Start must look like 1:23, 1:23.5, 1:02:03, or raw ms');
+        return;
+      }
+      if (endMs === null) {
+        djShowError('End must look like 1:23, 1:23.5, 1:02:03, or raw ms');
+        return;
+      }
+      if (endMs <= startMs) {
+        djShowError('End must be after start');
+        return;
+      }
+
+      djShowError('');
+      // Cleared before the write so the re-render that saveClips triggers shows
+      // the saved row rather than leaving the editor open over stale values.
+      djEditingClipId = null;
+      const saved = await mutateClips(filename, current =>
+        current.map(c => (c.id === clipId ? { ...c, startMs, endMs } : c))
+      );
+
+      if (!saved) {
+        // Reopen on failure so the typed values aren't silently thrown away.
+        djEditingClipId = clipId;
+        renderClips();
+        return;
+      }
+
+      if (djDurationMs > 0 && endMs > djDurationMs && filename === djCurrentFilename) {
+        djShowError(`Saved, but the clip ends after the track does (${formatTime(djDurationMs)})`);
+      }
+    }
+
     djClipList.addEventListener('click', async e => {
       const row = e.target.closest('.dj-clip');
       if (!row) return;
@@ -2682,6 +2821,31 @@
         return;
       }
 
+      if (e.target.closest('.dj-clip-edit')) {
+        // Opening a second editor would discard whatever was typed into the
+        // first without a word, so make the user resolve that one first.
+        if (djEditingClipId && djEditingClipId !== clipId) {
+          djShowError('Finish editing the open clip first (✓ to save, ✕ to cancel)');
+          return;
+        }
+        djShowError('');
+        djEditingClipId = clipId;
+        renderClips();
+        return;
+      }
+
+      if (e.target.closest('.dj-clip-cancel')) {
+        djShowError('');
+        djEditingClipId = null;
+        renderClips();
+        return;
+      }
+
+      if (e.target.closest('.dj-clip-save')) {
+        await saveClipEdit(row, filename, clipId);
+        return;
+      }
+
       if (e.target.closest('.dj-clip-del')) {
         await mutateClips(filename, current => current.filter(c => c.id !== clipId));
         return;
@@ -2693,6 +2857,26 @@
         await mutateClips(filename, current =>
           current.map(c => (c.id === clipId ? { ...c, label: label.trim() } : c))
         );
+      }
+    });
+
+    // Enter saves, Escape cancels — matching the manual-add row, so both clip
+    // entry paths behave the same on the keyboard.
+    djClipList.addEventListener('keydown', async e => {
+      const input = e.target.closest('.dj-clip-edit-input');
+      if (!input) return;
+
+      const row = input.closest('.dj-clip');
+      if (!row) return;
+
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        await saveClipEdit(row, row.dataset.filename, row.dataset.clipId);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        djShowError('');
+        djEditingClipId = null;
+        renderClips();
       }
     });
 
