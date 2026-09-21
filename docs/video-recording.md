@@ -228,10 +228,44 @@ Captures happen in real time — a 60s clip takes at least 60s, plus handle and 
 so a large batch is genuinely long. A failed clip is reported and the batch continues,
 rather than abandoning the rest.
 
+Every clip ends with a **2s fade-out on both video and audio** (`FADE_SECONDS`). The
+fade runs *inside* the marked slice — it starts 2s before `endMs` — so the clip still
+ends exactly where it was marked rather than running past it. On a clip shorter than
+4s the fade shrinks to half the clip, since a 2s fade on a 1.5s clip would start before
+the clip begins.
+
 Each render is verified before being accepted: the output must come out at the expected
-duration and must contain audible audio. The most common failure is a clip marked past
-the end of its track, which yields a short audio slice — the same case the DJ tab flags
-with **⚠**.
+duration, contain audible audio, and the station must still be on the clip's own track.
+The most common failure is a clip marked past the end of its track, which yields a short
+audio slice — the same case the DJ tab flags with **⚠**.
+
+**Two known flakes, both intermittent and neither tied to a particular clip** (the same
+clip renders fine on a retry), so neither can be fixed by correcting inputs:
+
+1. **Playwright's video encoder deadlocks.** `context.close()` never returns; its ffmpeg
+   child sits blocked on `pipe:0` with a 0-byte `.webm`. This one genuinely loses the
+   capture. Bounded by `CLOSE_TIMEOUT_MS` (60s): the clip fails, the browser is torn
+   down to kill the stuck encoder, and the batch continues. **Just re-run that clip.**
+2. **The encode finishes but never reports exit.** ffmpeg writes a complete, valid MP4
+   and then lingers as a zombie, so `close` never fires. Here the output is *fine*, so
+   a timeout is treated as inconclusive rather than fatal — the run falls through to
+   verification, which is what actually decides. Failing on it would throw away good
+   work.
+
+Outside the script, a wedged process ignores SIGTERM and needs `kill -9`.
+
+Every subprocess is bounded (`SUBPROCESS_TIMEOUT_MS`), because `close` fires only after
+the child exits *and* its stdio drains — so an un-reaped child otherwise stalls the
+batch forever.
+
+Because the video shows whatever the *page* is playing while the audio is cut from the
+clip's own MP3, a render that runs long can silently capture the **wrong track** — right
+audio, wrong cover art. The script re-checks `/now-playing` after each capture and fails
+the clip if the station moved.
+
+Before recording anything, the script preflights the environment: `ffmpeg`/`ffprobe` on
+PATH, the site reachable, and Playwright resolving to a **full Chromium** rather than
+`chromium_headless_shell` (which cannot record and fails only at launch).
 
 > The script refuses to run against anything but `localhost`, because every render puts
 > a track on the air. See [the branch caveats](#branch-caveats).

@@ -15,7 +15,7 @@
  *
  *   Playwright  -> silent video, exact duration, vertical framing
  *   ffmpeg -ss  -> lossless audio slice from songs/*.mp3
- *   ffmpeg mux  -> the clip
+ *   ffmpeg mux  -> the clip, with a fade-out on both streams
  *
  * Usage:
  *   bun run scripts/recordClips.ts                       # every marked clip
@@ -40,7 +40,7 @@
 /// <reference lib="dom.iterable" />
 
 import { spawn } from 'node:child_process'
-import { access, mkdir, readdir, rm } from 'node:fs/promises'
+import { access, mkdir, readdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { Clip } from '../src/types'
 
@@ -56,6 +56,16 @@ const API_KEY = process.env.RADIO_API_KEY ?? ''
 const WIDTH = 1080
 const HEIGHT = 1920
 const FPS = 30
+
+/**
+ * Length of the fade-to-black / fade-to-silence at the end of every clip.
+ *
+ * The fade runs INSIDE the marked slice — it starts `FADE_SECONDS` before the
+ * clip's `endMs` — so the clip still ends exactly where it was marked rather than
+ * running past it. A clip shorter than the fade gets a proportionally shorter one
+ * (see `fadeStart`), since a 2s fade on a 1.5s clip would start before it begins.
+ */
+const FADE_SECONDS = 2
 
 /**
  * Recorded seconds of slack beyond the clip length, trimmed off after the fact.
@@ -77,6 +87,25 @@ const CONTENT_TIMEOUT_MS = 15_000
 
 /** The radio needs a moment to actually be streaming the new position. */
 const ON_AIR_SETTLE_MS = 1200
+
+/**
+ * Ceiling on `context.close()`, which finalizes the recorded video.
+ *
+ * Playwright's video encoder can deadlock (see `captureVideo`), and the close
+ * then never returns. A healthy close takes well under a second even for a 60s
+ * capture, so 60s is generous; the point is only that a wedged render fails
+ * instead of hanging an unattended batch forever.
+ */
+const CLOSE_TIMEOUT_MS = 60_000
+
+/**
+ * Ceiling on any single ffmpeg/ffprobe invocation. Encoding a 60s 1080x1920 clip
+ * at `preset slow` takes well under a minute on normal hardware; this only exists
+ * so a wedged child fails its clip instead of the whole batch. The encode treats
+ * hitting it as inconclusive rather than fatal (a zombie ffmpeg still leaves a
+ * valid file), so it can be tight enough not to stall a batch for long.
+ */
+const SUBPROCESS_TIMEOUT_MS = 120_000
 
 const OUTPUT_DIR = 'recordings'
 const SONGS_DIR = 'songs'
@@ -119,21 +148,55 @@ interface RenderResult {
  * ffmpeg writes progress to stderr even on success, so stderr is only surfaced
  * when the exit code is non-zero.
  */
-function run(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+function run(
+	command: string,
+	args: string[],
+	timeoutMs: number = SUBPROCESS_TIMEOUT_MS,
+): Promise<{ stdout: string; stderr: string }> {
 	return new Promise((resolve, reject) => {
 		const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
 		let stdout = ''
 		let stderr = ''
+		let settled = false
+
+		/**
+		 * Bound every subprocess, not just the capture.
+		 *
+		 * `close` fires only once the process has exited AND its stdio is drained,
+		 * so a wedged or un-reaped child leaves this promise pending forever — which
+		 * stalled an unattended batch during testing. SIGKILL rather than SIGTERM:
+		 * the processes that actually wedge here ignore the polite signal.
+		 */
+		const timer = setTimeout(() => {
+			if (settled) return
+			settled = true
+			child.kill('SIGKILL')
+			reject(new Error(`${command} did not finish within ${timeoutMs / 1000}s`))
+		}, timeoutMs)
+		timer.unref?.()
+
+		const finish = (run: () => void) => {
+			if (settled) return
+			settled = true
+			clearTimeout(timer)
+			run()
+		}
+
+		// Both pipes must be drained. ffmpeg's `-f null -` writes the muxer output to
+		// stdout while its report goes to stderr; leaving either unread risks the
+		// child blocking on a full pipe buffer.
 		child.stdout.on('data', chunk => {
 			stdout += String(chunk)
 		})
 		child.stderr.on('data', chunk => {
 			stderr += String(chunk)
 		})
-		child.on('error', reject)
+		child.on('error', error => finish(() => reject(error)))
 		child.on('close', code => {
-			if (code === 0) resolve({ stdout, stderr })
-			else reject(new Error(`${command} exited ${code}\n${stderr.trim()}`))
+			finish(() => {
+				if (code === 0) resolve({ stdout, stderr })
+				else reject(new Error(`${command} exited ${code}\n${stderr.trim()}`))
+			})
 		})
 	})
 }
@@ -163,6 +226,22 @@ async function exists(file: string): Promise<boolean> {
 	} catch {
 		return false
 	}
+}
+
+/**
+ * Reject a promise that takes too long, so a hung operation cannot stall a batch.
+ *
+ * The underlying work is NOT cancelled — nothing here can un-wedge a deadlocked
+ * child process — so callers must still tear down whatever owns it (for the
+ * capture, that is `browser.close()` in the `finally`). The timer is unref'd so a
+ * pending one cannot by itself keep the process alive.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(message)), ms)
+		timer.unref?.()
+		promise.then(resolve, reject).finally(() => clearTimeout(timer))
+	})
 }
 
 /**
@@ -220,6 +299,18 @@ async function playAt(filename: string, startMs: number): Promise<void> {
 	if (!response.ok) {
 		throw new Error(`POST /admin/dj/play (${filename} @${startMs}) -> ${response.status}`)
 	}
+}
+
+/** The `path` of whatever the station is currently broadcasting. */
+async function nowPlayingPath(): Promise<string | null> {
+	const response = await fetch(`${RADIO_URL}/now-playing`)
+	if (!response.ok) return null
+	const body: unknown = await response.json()
+	if (typeof body !== 'object' || body === null || !('track' in body)) return null
+	const { track } = body as { track: unknown }
+	if (typeof track !== 'object' || track === null || !('path' in track)) return null
+	const { path: trackPath } = track as { path: unknown }
+	return typeof trackPath === 'string' ? trackPath : null
 }
 
 // ---------------------------------------------------------------------------
@@ -286,16 +377,41 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 		})
 
 		await page.waitForTimeout(seconds * 1000)
-		await context.close()
+
+		/**
+		 * `context.close()` flushes and finalizes the video, and it can hang forever.
+		 *
+		 * Observed in testing: Playwright's ffmpeg encoder sat blocked reading
+		 * `pipe:0` with a 0-byte .webm and never returned, deadlocking the close for
+		 * 20+ minutes. It is intermittent — the same clip rendered fine on later
+		 * attempts — so it cannot be avoided by validating inputs. Without a bound
+		 * here, one bad render hangs an unattended batch indefinitely instead of
+		 * failing that clip and moving on.
+		 */
+		await withTimeout(
+			context.close(),
+			CLOSE_TIMEOUT_MS,
+			`Playwright did not finalize the video within ${CLOSE_TIMEOUT_MS / 1000}s ` +
+				'(the encoder can deadlock; this render is lost, the batch continues)',
+		)
 
 		// Playwright names the file itself; the directory is per-render, so the
 		// single .webm in it is ours.
 		const entries = await readdir(outDir)
 		const video = entries.find(entry => entry.endsWith('.webm'))
 		if (!video) throw new Error(`Playwright wrote no video into ${outDir}`)
-		return path.join(outDir, video)
+
+		// A deadlocked encoder leaves the file present but empty, so existence alone
+		// is not proof of a capture.
+		const videoPath = path.join(outDir, video)
+		const { size } = await stat(videoPath)
+		if (size === 0) throw new Error('Playwright wrote a 0-byte video (encoder produced no frames)')
+
+		return videoPath
 	} finally {
-		await browser.close()
+		// Always reachable, including after a close() timeout above — this is what
+		// actually tears down the stuck encoder process so the next clip can run.
+		await browser.close().catch(() => {})
 	}
 }
 
@@ -303,7 +419,7 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 // Render one clip
 // ---------------------------------------------------------------------------
 
-async function renderClip(job: RenderJob, workDir: string): Promise<void> {
+async function renderClip(job: RenderJob, workDir: string, step: (message: string) => void): Promise<void> {
 	const { filename, clip, outputPath, durationSeconds } = job
 	const sourceMp3 = path.join(SONGS_DIR, filename)
 
@@ -311,12 +427,32 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		throw new Error(`source MP3 not found: ${sourceMp3}`)
 	}
 
+	step(`on air @${(clip.startMs / 1000).toFixed(1)}s`)
 	await playAt(filename, clip.startMs)
 	await new Promise(resolve => setTimeout(resolve, ON_AIR_SETTLE_MS))
 
 	const captureDir = path.join(workDir, 'capture')
 	await mkdir(captureDir, { recursive: true })
+	// Capture is real time, so say how long this will actually take.
+	step(`capturing ${(durationSeconds + HANDLE_SECONDS).toFixed(0)}s (real time)`)
 	const rawVideo = await captureVideo(captureDir, durationSeconds + HANDLE_SECONDS)
+
+	/**
+	 * Confirm the station never moved off this track mid-capture.
+	 *
+	 * The video shows whatever the PAGE says is playing, while the audio is cut
+	 * from this clip's own MP3 — so if the station advanced (a stalled render, a
+	 * track ending, someone else driving the DJ tab), the result is a silent
+	 * mismatch: the wrong cover art over the right audio. Observed in testing,
+	 * where a wedged render left the station several tracks along.
+	 */
+	const stillOnAir = await nowPlayingPath()
+	if (stillOnAir !== null && path.basename(stillOnAir) !== filename) {
+		throw new Error(
+			`station moved to ${path.basename(stillOnAir)} during capture — ` +
+				'the recorded video would show the wrong track',
+		)
+	}
 
 	/**
 	 * Measure the pre-paint lead-in rather than assuming it.
@@ -335,6 +471,7 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 	 * milliseconds; `-t` on the mux below truncates to the exact length. Keeping
 	 * the copy (rather than re-encoding here) avoids a generational loss.
 	 */
+	step('cutting audio')
 	const audioSlice = path.join(workDir, 'audio.mp3')
 	await run('ffmpeg', [
 		'-v',
@@ -362,7 +499,31 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		)
 	}
 
-	await run('ffmpeg', [
+	/**
+	 * Fade out the last seconds of both streams.
+	 *
+	 * Timestamps are relative to the TRIMMED output, not the source files: `-ss`
+	 * on the video input and `-ss` on the audio cut both reset the clock to zero,
+	 * so the fade starts at `durationSeconds - fade` in filter time.
+	 *
+	 * `afade` needs an explicit duration (`d`) rather than inheriting one, and
+	 * `fade=t=out` needs `st`+`d` for the same reason.
+	 */
+	step('encoding')
+	const fade = Math.min(FADE_SECONDS, durationSeconds / 2)
+	const fadeStart = durationSeconds - fade
+
+	/**
+	 * Tolerate an encode that finishes its file but never reports exit.
+	 *
+	 * Observed repeatedly in testing: ffmpeg writes a complete, valid MP4 and then
+	 * lingers as a zombie, so `close` never fires and `run()` eventually times it
+	 * out. Failing the clip there would throw away a perfectly good render, so the
+	 * timeout is treated as inconclusive — the verification below is what actually
+	 * decides, and it rejects a truncated or silent file anyway. Any other error is
+	 * still fatal.
+	 */
+	const encode = run('ffmpeg', [
 		'-v',
 		'error',
 		'-y',
@@ -376,6 +537,10 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		'0:v',
 		'-map',
 		'1:a',
+		'-vf',
+		`fade=t=out:st=${fadeStart}:d=${fade}`,
+		'-af',
+		`afade=t=out:st=${fadeStart}:d=${fade}`,
 		'-c:v',
 		'libx264',
 		'-preset',
@@ -396,7 +561,16 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		'+faststart',
 		outputPath,
 	])
+	try {
+		await encode
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error)
+		if (!message.includes('did not finish within')) throw error
+		if (!(await exists(outputPath))) throw error
+		console.log('    (encoder did not report exit; falling through to verification)')
+	}
 
+	step('verifying')
 	// Verify what we actually produced rather than trusting a zero exit code: a
 	// silent or short render is the failure mode that would otherwise reach the
 	// editor unnoticed.
@@ -405,6 +579,14 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		throw new Error(`rendered ${finalDuration.toFixed(2)}s, expected ${durationSeconds.toFixed(2)}s`)
 	}
 
+	/**
+	 * Confirm the audio is actually audible, not just present.
+	 *
+	 * `-f null -` sends the null muxer's output to stdout, so both pipes are drained
+	 * in `run()`. The report itself goes to stderr. Reading `mean_volume` catches the
+	 * real failure — a track of digital silence, which has a valid AAC stream and a
+	 * correct duration and would otherwise pass every other check here.
+	 */
 	const { stderr } = await run('ffmpeg', [
 		'-hide_banner',
 		'-i',
@@ -417,8 +599,13 @@ async function renderClip(job: RenderJob, workDir: string): Promise<void> {
 		'null',
 		'-',
 	])
-	if (/mean_volume:\s*-91|n_samples:\s*0\b(?![\s\S]*n_samples:\s*[1-9])/.test(stderr)) {
-		throw new Error('rendered file has no audible audio')
+	const meanVolume = /mean_volume:\s*(-?\d+(?:\.\d+)?) dB/.exec(stderr)
+	if (!meanVolume) {
+		throw new Error('could not measure the rendered audio (no volumedetect report)')
+	}
+	// Digital silence reports -91 dB; anything quieter than -80 has no usable signal.
+	if (Number(meanVolume[1]) < -80) {
+		throw new Error(`rendered file has no audible audio (mean ${meanVolume[1]} dB)`)
 	}
 }
 
@@ -462,6 +649,41 @@ function buildJobs(clips: Record<string, Clip[]>, options: Options): RenderJob[]
 	return jobs
 }
 
+/**
+ * Fail fast on a broken environment, before spending real-time captures on it.
+ *
+ * Each of these cost a wasted run at some point during this workflow's testing:
+ * ffmpeg missing from PATH, the site not running, and — the quiet one — a
+ * Playwright install with only `chromium_headless_shell`, which cannot record
+ * video and fails at launch rather than at install.
+ */
+async function preflight(): Promise<void> {
+	for (const binary of ['ffmpeg', 'ffprobe']) {
+		try {
+			await run(binary, ['-version'])
+		} catch {
+			throw new Error(`${binary} is not on PATH — it is needed to cut and mux the clip`)
+		}
+	}
+
+	try {
+		const response = await fetch(`${SITE_URL}/en/radio/?${PAGE_FLAGS}`)
+		if (!response.ok) throw new Error(String(response.status))
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error)
+		throw new Error(`the site at ${SITE_URL} is not reachable (${detail}) — it is the page being filmed`)
+	}
+
+	const { chromium } = await import('playwright')
+	const executable = chromium.executablePath()
+	if (executable.includes('headless_shell')) {
+		throw new Error(
+			`Playwright resolved to ${executable}, which cannot record video. ` +
+				'Install the full browser with `npx playwright install chromium`.',
+		)
+	}
+}
+
 async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2))
 
@@ -496,7 +718,17 @@ async function main(): Promise<void> {
 			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s -> ${job.outputPath}`,
 		)
 	}
+	/**
+	 * Captures run in real time, so a batch takes at least the sum of its clips.
+	 * Saying so upfront is what separates "still working" from "wedged" when the
+	 * run goes quiet — the distinction that cost real time during testing.
+	 */
+	const captureSeconds = jobs.reduce((total, job) => total + job.durationSeconds + HANDLE_SECONDS, 0)
+	console.log(`\n~${Math.ceil(captureSeconds / 60)} min of capture, plus encoding.`)
+
 	if (options.dryRun) return
+
+	await preflight()
 
 	await mkdir(OUTPUT_DIR, { recursive: true })
 
@@ -509,7 +741,7 @@ async function main(): Promise<void> {
 		await rm(workDir, { recursive: true, force: true })
 		await mkdir(workDir, { recursive: true })
 		try {
-			await renderClip(job, workDir)
+			await renderClip(job, workDir, message => console.log(`  … ${message}`))
 			console.log(`  ✓ ${job.outputPath}`)
 			results.push({ job, ok: true })
 		} catch (error) {
