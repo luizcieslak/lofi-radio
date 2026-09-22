@@ -40,7 +40,7 @@
 /// <reference lib="dom.iterable" />
 
 import { spawn } from 'node:child_process'
-import { access, mkdir, readdir, rm, stat } from 'node:fs/promises'
+import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { Clip } from '../src/types'
 
@@ -68,16 +68,49 @@ const FPS = 30
 const FADE_SECONDS = 2
 
 /**
- * Recorded seconds of slack beyond the clip length, trimmed off after the fact.
- *
- * Playwright starts recording when the CONTEXT is created, not when the page has
- * painted, so every capture opens with a stretch of empty background and an
- * unloaded cover box. Measured at 4.4s and 5.08s on two runs of the same page —
- * it varies with image fetches and dev-server warmth, so it must be measured per
- * recording, never hardcoded. We record with this much extra and cut the real
- * lead-in off using the finished file's own duration.
+ * Rough per-clip overhead for the time estimate: browser launch, navigation,
+ * waiting on artwork, the settle, and the encode. Not load-bearing — it only
+ * makes the upfront "this will take N minutes" honest.
  */
-const HANDLE_SECONDS = 4
+const SETUP_SECONDS = 8
+
+/**
+ * Output frame rate. The page paints at a variable rate (~45fps observed), so
+ * frames are resampled onto this fixed timeline — one written per slot, the most
+ * recent one repeated when the page is idle. 30 is the usual delivery rate for
+ * this kind of clip and keeps the encode cheap.
+ */
+const FRAME_RATE = 30
+
+/**
+ * Ceiling on `chromium.launch()`. A cold start is a couple of seconds; this is
+ * generous so it only ever catches a launch that is never coming back.
+ */
+const LAUNCH_TIMEOUT_MS = 60_000
+
+/** How long to wait for the screencast's first frame before calling it dead. */
+const FIRST_FRAME_TIMEOUT_MS = 10_000
+
+/**
+ * How long the page may go without producing a frame before the capture is
+ * treated as dead. A static page legitimately sends nothing for a while, so this
+ * is well above any normal gap: it exists to catch a browser that has stopped,
+ * not to police the paint rate.
+ */
+const FRAME_STALL_TIMEOUT_MS = 5_000
+
+/**
+ * Ceiling on the encoder's exit after its stdin is closed. It has already been
+ * fed every frame by this point, so this only catches a child that never reaps.
+ */
+const ENCODER_TIMEOUT_MS = 60_000
+
+/**
+ * How close to the track's end a clip must be marked to count as running to the
+ * end of the song. Marks are set by ear against a decoded duration, so they land
+ * a little short or long; this is the slop that treats those as the same intent.
+ */
+const TRACK_END_TOLERANCE_SECONDS = 1.5
 
 /** The page is visually static, but give the glow/drift a moment to settle. */
 const SETTLE_MS = 1500
@@ -92,18 +125,8 @@ const NAVIGATION_TIMEOUT_MS = 30_000
 const ON_AIR_SETTLE_MS = 1200
 
 /**
- * Ceiling on `context.close()`, which finalizes the recorded video.
- *
- * Playwright's video encoder can deadlock (see `captureVideo`), and the close
- * then never returns. A healthy close takes well under a second even for a 60s
- * capture, so 60s is generous; the point is only that a wedged render fails
- * instead of hanging an unattended batch forever.
- */
-const CLOSE_TIMEOUT_MS = 60_000
-
-/**
- * Ceiling on the whole in-browser phase: navigate, await artwork, play, hold for
- * the capture, finalize.
+ * Slack allowed for the whole in-browser phase *on top of* the capture's own real
+ * time: launch, navigate, await artwork, play, finalize.
  *
  * `CLOSE_TIMEOUT_MS` alone is not enough. Every await in that phase is a protocol
  * round-trip to the browser, so when the capture encoder wedges, the *page* stops
@@ -111,14 +134,13 @@ const CLOSE_TIMEOUT_MS = 60_000
  * in a 15-clip batch stalling 29 minutes inside `page.waitForTimeout`, well before
  * `context.close()` was ever reached. Bounding only the close guards one point on
  * a path where any point can hang; this bounds the path.
+ *
+ * It must be slack rather than a fixed ceiling: the phase contains a capture that
+ * runs in real time, so a constant shrinks to nothing as clips get longer. At a
+ * flat 90s a 57s clip had 33s for everything else and tripped the outer deadline
+ * before the inner `CLOSE_TIMEOUT_MS` could name the close as the culprit.
  */
-const CAPTURE_TIMEOUT_MS = 90_000
-
-/**
- * Ceiling on browser teardown. `browser.close()` is itself a protocol call, so the
- * very deadlock this recovers from can hang the recovery; past it we SIGKILL.
- */
-const TEARDOWN_TIMEOUT_MS = 15_000
+const CAPTURE_SLACK_MS = 90_000
 
 /**
  * Ceiling on any single ffmpeg/ffprobe invocation. Encoding a 60s 1080x1920 clip
@@ -195,7 +217,9 @@ function run(
 			child.kill('SIGKILL')
 			reject(new Error(`${command} did not finish within ${timeoutMs / 1000}s`))
 		}, timeoutMs)
-		timer.unref?.()
+		// Not unref'd: if the child dies without reporting, this timer can be the
+		// only handle left, and an unref'd one would let Node idle forever instead
+		// of firing. It is always cleared in `finish`.
 
 		const finish = (run: () => void) => {
 			if (settled) return
@@ -255,13 +279,22 @@ async function exists(file: string): Promise<boolean> {
  *
  * The underlying work is NOT cancelled — nothing here can un-wedge a deadlocked
  * child process — so callers must still tear down whatever owns it (for the
- * capture, that is `browser.close()` in the `finally`). The timer is unref'd so a
- * pending one cannot by itself keep the process alive.
+ * capture, that is `browser.close()` in the `finally`).
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string | (() => string)): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(message)), ms)
-		timer.unref?.()
+		// A thunk is evaluated at timeout, so the message can report progress made
+		// up to that moment rather than what was known when the timer was armed.
+		/**
+		 * Deliberately NOT `unref`'d. An unref'd timer does not keep the event loop
+		 * alive, so when the thing being waited on dies and takes every other handle
+		 * with it (a browser that exits mid-capture, killing its protocol sockets),
+		 * Node has nothing left to run and simply idles — the timeout never fires and
+		 * the process hangs forever. Observed: a 112s capture budget still pending
+		 * after 18 minutes. The timer is always cleared below, so keeping it
+		 * referenced cannot delay a normal exit.
+		 */
+		const timer = setTimeout(() => reject(new Error(typeof message === 'function' ? message() : message)), ms)
 		promise.then(resolve, reject).finally(() => clearTimeout(timer))
 	})
 }
@@ -340,77 +373,20 @@ async function nowPlayingPath(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 
 /**
- * Last-resort teardown for a browser that will not close.
- *
- * `browser.close()` is a protocol call, so the deadlock it is meant to recover from
- * can hang the recovery itself, and Playwright's `Browser` exposes no pid
- * (`process()` is on `BrowserServer`; `launchServer` + `connect` fails under Bun's
- * ws client). The capture directory is not in the browser's argv either -- the
- * encoder is fed over `pipe:0` -- so the processes are matched by the browser
- * binary path Playwright launched, restricted to children of this process so a
- * concurrent run or an unrelated Chromium is never touched.
- */
-async function killStuckCapture(): Promise<void> {
-	const { chromium } = await import('playwright')
-	// The installed-browsers root, e.g. ~/.cache/ms-playwright -- shared by the
-	// browser build and the bundled ffmpeg that encodes the capture.
-	const browsersRoot = path.dirname(path.dirname(path.dirname(chromium.executablePath())))
-	try {
-		const { stdout } = await run('pgrep', ['-f', browsersRoot], 10_000)
-		const pids = stdout
-			.split('\n')
-			.map(line => Number(line.trim()))
-			.filter(pid => Number.isInteger(pid) && pid > 0 && pid !== process.pid)
-		for (const pid of await ownDescendants(pids)) {
-			try {
-				process.kill(pid, 'SIGKILL')
-			} catch {
-				// Already gone; nothing to reap.
-			}
-		}
-	} catch {
-		// pgrep exits 1 when nothing matches, which is the good case.
-	}
-}
-
-/**
- * Narrow `pids` to those descended from this process, so killing a wedged capture
- * cannot take down a browser this script did not start.
- */
-async function ownDescendants(pids: number[]): Promise<number[]> {
-	if (pids.length === 0) return []
-	const parents = new Map<number, number>()
-	try {
-		const { stdout } = await run('ps', ['-eo', 'pid=,ppid='], 10_000)
-		for (const line of stdout.split('\n')) {
-			const fields = line.trim().split(/\s+/)
-			if (fields.length < 2) continue
-			const pid = Number(fields[0])
-			const ppid = Number(fields[1])
-			if (Number.isInteger(pid) && Number.isInteger(ppid)) parents.set(pid, ppid)
-		}
-	} catch {
-		// Without the process table there is no safe way to attribute these.
-		return []
-	}
-	const isOurs = (pid: number): boolean => {
-		// Walk up to init; stop on a cycle or a pid that has left the table.
-		for (let current = pid, hops = 0; hops < 64; hops++) {
-			const parent = parents.get(current)
-			if (parent === undefined || parent <= 1) return false
-			if (parent === process.pid) return true
-			current = parent
-		}
-		return false
-	}
-	return pids.filter(isOurs)
-}
-
-/**
  * Record the page for `seconds`, returning the path to the raw silent video.
  *
- * Playwright's own video file is written on `context.close()`, so the path is only
- * available after the context is gone.
+ * Frames come from CDP's screencast rather than Playwright's `recordVideo`.
+ * `recordVideo` deadlocks: reproduced reliably, the SECOND capture in a Node
+ * process hangs in `context.close()` while its encoder still writes a complete
+ * file, because finalization happens inside Playwright where we cannot reach it.
+ * Driving the screencast directly puts the frame pipeline in this file -- the
+ * close is then an ordinary protocol call (measured: 0.1s, three captures in a
+ * row) and ffmpeg is our own child.
+ *
+ * The page paints at a variable rate, so frames are resampled onto a fixed
+ * `FRAME_RATE` timeline: hold the most recent frame and emit exactly one per
+ * slot, repeating it when the page is idle. That makes the output exactly
+ * `seconds` long by construction rather than by trimming afterwards.
  */
 async function captureVideo(outDir: string, seconds: number): Promise<string> {
 	// Imported lazily so `--dry-run` and `--help` work without Playwright installed.
@@ -418,56 +394,64 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 
 	/**
 	 * `channel: 'chromium'` is load-bearing, not cosmetic. A bare `chromium.launch()`
-	 * starts `chromium_headless_shell`, which cannot record video: it produces a
-	 * 0-byte .webm and leaves its encoder blocked on `pipe:0`, which then deadlocks
-	 * `context.close()`. That was the "intermittent encoder flake" seen throughout
-	 * this workflow's testing. Only this channel selects the full browser.
+	 * starts `chromium_headless_shell`, which cannot capture: it yields a 0-byte
+	 * video and an encoder blocked on `pipe:0`. Only this channel selects the full
+	 * browser.
 	 */
-	const browser = await chromium.launch({ channel: 'chromium' })
-	const context = await browser.newContext({
-		viewport: { width: WIDTH, height: HEIGHT },
-		recordVideo: { dir: outDir, size: { width: WIDTH, height: HEIGHT } },
-		deviceScaleFactor: 1,
-	})
-
 	/**
-	 * The Astro dev toolbar injects a floating dark pill at the bottom of the
-	 * viewport. It lives outside the page's own DOM, so `?stage` cannot hide it,
-	 * and it sits squarely in frame on a 1080x1920 capture.
+	 * Bounded like everything else. `launch()` sits OUTSIDE the capture deadline
+	 * below (that one wraps only the page work), so a launch that never returns was
+	 * unguarded entirely — observed hanging a batch indefinitely on clip 3 with no
+	 * browser, no encoder and no open handles, just an idle process.
 	 */
-	await context.addInitScript(() => {
-		const apply = () => {
-			const style = document.createElement('style')
-			style.textContent = 'astro-dev-toolbar{display:none !important}'
-			document.head?.appendChild(style)
-		}
-		if (document.head) apply()
-		else document.addEventListener('DOMContentLoaded', apply)
-	})
+	const browser = await withTimeout(
+		chromium.launch({ channel: 'chromium' }),
+		LAUNCH_TIMEOUT_MS,
+		`the browser did not start within ${LAUNCH_TIMEOUT_MS / 1000}s`,
+	)
+	const videoPath = path.join(outDir, 'capture.mp4')
+
+	// Registered as they spawn so the `finally` can reap one left by any throw.
+	const encoders: ReturnType<typeof spawn>[] = []
 
 	try {
-		/**
-		 * The entire browser phase runs under one deadline. A wedged encoder makes
-		 * the page unresponsive, and then *any* of these awaits can hang forever --
-		 * they are all protocol round-trips, not local sleeps. The timeout rejects
-		 * this promise while the hung call stays pending in the background; the
-		 * `finally` below is what actually kills it.
-		 */
+		let phase = 'opening the page'
 		const capture = async (): Promise<void> => {
+			const context = await browser.newContext({
+				viewport: { width: WIDTH, height: HEIGHT },
+				deviceScaleFactor: 1,
+			})
+
+			/**
+			 * The Astro dev toolbar injects a floating dark pill at the bottom of the
+			 * viewport. It lives outside the page's own DOM, so `?stage` cannot hide
+			 * it, and it sits squarely in frame on a 1080x1920 capture.
+			 */
+			await context.addInitScript(() => {
+				const apply = () => {
+					const style = document.createElement('style')
+					style.textContent = 'astro-dev-toolbar{display:none !important}'
+					document.head?.appendChild(style)
+				}
+				if (document.head) apply()
+				else document.addEventListener('DOMContentLoaded', apply)
+			})
+
 			const page = await context.newPage()
+			phase = 'navigating to the page'
 			/**
 			 * `domcontentloaded`, not `networkidle`. The radio page holds an SSE
 			 * metadata stream and an audio stream open by design, so the network never
 			 * reliably goes quiet for the 500ms `networkidle` requires -- it only
 			 * passes when those happen to lull, and it timed out on two clips of a
-			 * 15-clip batch. Readiness for the shot is established below by waiting on
-			 * the artwork itself, which is the thing that must actually be painted.
+			 * 15-clip batch. Readiness is established below by the artwork itself.
 			 */
 			await page.goto(`${SITE_URL}/en/radio/?${PAGE_FLAGS}`, {
 				waitUntil: 'domcontentloaded',
 				timeout: NAVIGATION_TIMEOUT_MS,
 			})
 
+			phase = 'waiting for the artwork to load'
 			// Wait for the artwork itself, not merely the document. The cover IS the
 			// shot; recording while it is still fetching yields an empty square.
 			await page.waitForFunction(
@@ -478,6 +462,7 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 				null,
 				{ timeout: CONTENT_TIMEOUT_MS },
 			)
+			phase = 'waiting for the page to settle'
 			await page.waitForTimeout(SETTLE_MS)
 
 			// Start playback so the page is in its playing state. In stage mode the
@@ -491,59 +476,122 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 				playButton?.click()
 			})
 
-			await page.waitForTimeout(seconds * 1000)
-
-			/**
-			 * `context.close()` flushes and finalizes the video, so the file only
-			 * exists after it returns -- and it can hang forever. Playwright's ffmpeg
-			 * encoder has been seen blocked reading `pipe:0` with a 0-byte .webm,
-			 * never returning. It is intermittent (the same clip renders fine on a
-			 * retry), so it cannot be avoided by validating inputs. Its own bound is
-			 * kept under the outer one so a close-specific stall still names itself.
-			 */
-			await withTimeout(
-				context.close(),
-				CLOSE_TIMEOUT_MS,
-				`Playwright did not finalize the video within ${CLOSE_TIMEOUT_MS / 1000}s ` +
-					'(the encoder can deadlock; this render is lost, the batch continues)',
+			// ffmpeg consumes JPEGs on stdin and encodes the final MP4 in one pass.
+			// No intermediate .webm, so there is no second generational loss and no
+			// separate trim step.
+			const encoder = spawn(
+				'ffmpeg',
+				// biome-ignore format: one flag group per line reads better than a reflowed block
+				[
+					'-y',
+					'-f', 'image2pipe',
+					'-framerate', String(FRAME_RATE),
+					'-i', 'pipe:0',
+					'-c:v', 'libx264',
+					'-preset', 'veryfast',
+					'-crf', '20',
+					'-pix_fmt', 'yuv420p',
+					videoPath,
+				],
+				{ stdio: ['pipe', 'ignore', 'pipe'] },
 			)
+			let encoderError = ''
+			encoder.stderr.on('data', chunk => {
+				encoderError += String(chunk)
+			})
+			const encoderClosed = new Promise<number>(resolve => encoder.on('close', code => resolve(code ?? -1)))
+			/**
+			 * ffmpeg reads frames from a pipe, so it exits only when that pipe is
+			 * closed. Every path out of this function must therefore close it: an
+			 * early throw that skipped `stdin.end()` left ffmpeg waiting forever on a
+			 * pipe nobody would ever close, holding the Node process open long past
+			 * the capture deadline (observed: a 6.5s clip with a 48-byte file and a
+			 * 12-minute encoder). `browser.close()` cannot reap it — it is our child,
+			 * not the browser's.
+			 */
+			encoders.push(encoder)
+
+			const cdp = await context.newCDPSession(page)
+			let latest: Buffer | null = null
+			let lastFrameAt = Date.now()
+			cdp.on('Page.screencastFrame', async frame => {
+				latest = Buffer.from(frame.data, 'base64')
+				lastFrameAt = Date.now()
+				// Chromium pauses the screencast until each frame is acknowledged.
+				await cdp.send('Page.screencastFrameAck', { sessionId: frame.sessionId }).catch(() => {})
+			})
+			phase = 'starting the screencast'
+			await cdp.send('Page.startScreencast', { format: 'jpeg', quality: 92, everyNthFrame: 1 })
+
+			// Slot 0 must have something to write.
+			const firstFrameBy = Date.now() + FIRST_FRAME_TIMEOUT_MS
+			while (latest === null) {
+				if (Date.now() > firstFrameBy) throw new Error('the screencast produced no frames')
+				await new Promise(resolve => setTimeout(resolve, 10))
+			}
+
+			phase = `holding for the ${seconds.toFixed(0)}s capture`
+			const totalFrames = Math.round(seconds * FRAME_RATE)
+			const startedAt = Date.now()
+			for (let index = 0; index < totalFrames; index++) {
+				const dueAt = startedAt + (index * 1000) / FRAME_RATE
+				const wait = dueAt - Date.now()
+				if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait))
+				if (!encoder.stdin.writable) throw new Error('the encoder closed mid-capture')
+				/**
+				 * A browser that dies mid-capture stops delivering frames while this
+				 * loop keeps writing, so the render silently becomes a freeze-frame
+				 * rather than a failure. Seen while diagnosing exactly that: frames
+				 * stopped at 163 of 210 and the run still "finished". Repeating the
+				 * last frame is correct for an idle page (nothing changed), so the
+				 * test is a stall long enough that only a dead page explains it.
+				 */
+				if (Date.now() - lastFrameAt > FRAME_STALL_TIMEOUT_MS) {
+					throw new Error(
+						`the page stopped producing frames after ${index} of ${totalFrames} ` +
+							'(the browser most likely died mid-capture)',
+					)
+				}
+				// `latest` is reassigned by the CDP handler between iterations.
+				encoder.stdin.write(latest as Buffer)
+			}
+
+			phase = 'finishing the encode'
+			await cdp.send('Page.stopScreencast').catch(() => {})
+			encoder.stdin.end()
+			const code = await withTimeout(encoderClosed, ENCODER_TIMEOUT_MS, 'the encoder did not exit')
+			if (code !== 0) throw new Error(`ffmpeg exited ${code}\n${encoderError.trim()}`)
+
+			phase = 'closing the browser context'
+			await context.close()
 		}
 
+		// The capture itself is real time, so the budget is that plus slack; a fixed
+		// ceiling would starve long clips. The message names the phase that never
+		// returned: a capture can stall at any of them, and which one is the diagnosis.
+		const captureBudgetMs = seconds * 1000 + CAPTURE_SLACK_MS
 		await withTimeout(
 			capture(),
-			CAPTURE_TIMEOUT_MS,
-			`Playwright did not finish the capture within ${CAPTURE_TIMEOUT_MS / 1000}s ` +
-				'(the encoder can deadlock and freeze the page; this render is lost, the batch continues)',
+			captureBudgetMs,
+			() =>
+				`stalled while ${phase} — no progress for ${(captureBudgetMs / 1000).toFixed(0)}s ` +
+				'(this render is lost, the batch continues)',
 		)
 
-		// Playwright names the file itself; the directory is per-render, so the
-		// single .webm in it is ours.
-		const entries = await readdir(outDir)
-		const video = entries.find(entry => entry.endsWith('.webm'))
-		if (!video) throw new Error(`Playwright wrote no video into ${outDir}`)
-
-		// A deadlocked encoder leaves the file present but empty, so existence alone
-		// is not proof of a capture.
-		const videoPath = path.join(outDir, video)
-		const { size } = await stat(videoPath)
-		if (size === 0) throw new Error('Playwright wrote a 0-byte video (encoder produced no frames)')
-
+		const { size } = await stat(videoPath).catch(() => ({ size: 0 }))
+		if (size === 0) throw new Error('the capture produced no video')
 		return videoPath
 	} finally {
-		/**
-		 * Always reachable, including after a timeout above -- this is what tears
-		 * down the stuck browser and its encoder so the next clip can run.
-		 *
-		 * `browser.close()` is itself a protocol call, so a deadlock deep enough to
-		 * trip the timeouts above can hang the cleanup too. Bound it, then SIGKILL
-		 * the process outright: leaking a wedged Chromium would leave the encoder
-		 * holding the capture directory and poison every remaining clip.
-		 */
-		try {
-			await withTimeout(browser.close(), TEARDOWN_TIMEOUT_MS, 'browser teardown timed out')
-		} catch {
-			await killStuckCapture()
+		// Reachable after a timeout above, and the only thing that reaps the browser
+		// and encoder left behind by one. Close stdin first so a live ffmpeg can
+		// finish normally; SIGKILL is for one that ignores it.
+		for (const encoder of encoders) {
+			if (encoder.exitCode === null && encoder.signalCode === null) {
+				encoder.stdin?.end()
+				encoder.kill('SIGKILL')
+			}
 		}
+		await browser.close().catch(() => {})
 	}
 }
 
@@ -559,6 +607,20 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 		throw new Error(`source MP3 not found: ${sourceMp3}`)
 	}
 
+	/**
+	 * Whether this clip runs to the end of the track, in which case the station is
+	 * *expected* to advance and the drift check below must not treat it as a fault.
+	 * Compared with a tolerance because the mark and the decoded duration are not
+	 * sample-exact.
+	 *
+	 * The capture no longer records past the clip, so a clip marked to the end of
+	 * the song ("end where the music ends") needs no special handling beyond this:
+	 * screencast frames start only once the page has painted, so there is no
+	 * pre-paint head to trim and therefore no slack to record.
+	 */
+	const trackSeconds = await probeDuration(sourceMp3)
+	const runsToEnd = trackSeconds - clip.endMs / 1000 < TRACK_END_TOLERANCE_SECONDS
+
 	step(`on air @${(clip.startMs / 1000).toFixed(1)}s`)
 	await playAt(filename, clip.startMs)
 	await new Promise(resolve => setTimeout(resolve, ON_AIR_SETTLE_MS))
@@ -566,8 +628,8 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 	const captureDir = path.join(workDir, 'capture')
 	await mkdir(captureDir, { recursive: true })
 	// Capture is real time, so say how long this will actually take.
-	step(`capturing ${(durationSeconds + HANDLE_SECONDS).toFixed(0)}s (real time)`)
-	const rawVideo = await captureVideo(captureDir, durationSeconds + HANDLE_SECONDS)
+	step(`capturing ${durationSeconds.toFixed(0)}s (real time)`)
+	const rawVideo = await captureVideo(captureDir, durationSeconds)
 
 	/**
 	 * Confirm the station never moved off this track mid-capture.
@@ -577,24 +639,21 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 	 * track ending, someone else driving the DJ tab), the result is a silent
 	 * mismatch: the wrong cover art over the right audio. Observed in testing,
 	 * where a wedged render left the station several tracks along.
-	 */
-	const stillOnAir = await nowPlayingPath()
-	if (stillOnAir !== null && path.basename(stillOnAir) !== filename) {
-		throw new Error(
-			`station moved to ${path.basename(stillOnAir)} during capture — ` +
-				'the recorded video would show the wrong track',
-		)
-	}
-
-	/**
-	 * Measure the pre-paint lead-in rather than assuming it.
 	 *
-	 * We waited `duration + HANDLE` seconds after the page had settled, so
-	 * everything in the file beyond that is the unpainted head. Using the file's
-	 * own duration means a slow image fetch shifts the trim automatically.
+	 * Skipped for a clip that runs to the end of the track: there the handoff is
+	 * the natural end of the song, it happens after the clip's own content is
+	 * already captured, and the trimmed-off tail is the only part that could show
+	 * the next track.
 	 */
-	const rawDuration = await probeDuration(rawVideo)
-	const leadIn = Math.max(0, rawDuration - (durationSeconds + HANDLE_SECONDS))
+	if (!runsToEnd) {
+		const stillOnAir = await nowPlayingPath()
+		if (stillOnAir !== null && path.basename(stillOnAir) !== filename) {
+			throw new Error(
+				`station moved to ${path.basename(stillOnAir)} during capture — ` +
+					'the recorded video would show the wrong track',
+			)
+		}
+	}
 
 	/**
 	 * Cut the audio from the source file.
@@ -659,8 +718,6 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 		'-v',
 		'error',
 		'-y',
-		'-ss',
-		String(leadIn),
 		'-i',
 		rawVideo,
 		'-i',
@@ -824,25 +881,63 @@ async function preflight(): Promise<void> {
 	}
 
 	/**
-	 * Verify the recording browser by launching it, not by inspecting
-	 * `chromium.executablePath()`.
+	 * Check that the recording browser is installed, WITHOUT launching it.
 	 *
-	 * That path reports the full Chromium even when `launch()` would actually start
-	 * `chromium_headless_shell` -- so the old check passed while the real capture ran
-	 * on the binary that cannot record. Launching the exact channel the capture uses
-	 * is the only check that cannot drift from it.
+	 * A probe launch here used to verify the channel end to end, but launching a
+	 * browser and closing it *poisons the next one in the same process*: the capture
+	 * browser then dies partway through, its screencast stops delivering frames, and
+	 * the render silently becomes a 48-byte file. Reproduced deterministically --
+	 * frames received froze at 163 of 210 with the probe present and ran to
+	 * completion without it. Playwright does not fully reset between browser
+	 * instances, which is the same shape as the `recordVideo` deadlock this pipeline
+	 * replaced. So: check the file on disk, and let the real launch be the first.
 	 */
 	const { chromium } = await import('playwright')
-	try {
-		const probe = await chromium.launch({ channel: 'chromium' })
-		await probe.close()
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error)
+	const executable = chromium.executablePath()
+	if (!(await exists(executable))) {
 		throw new Error(
-			`could not launch the "chromium" channel, which is the only build that records video (${detail}). ` +
+			`the Chromium build Playwright expects is missing (${executable}). ` +
 				'Install it with `npx playwright install chromium`.',
 		)
 	}
+}
+
+/**
+ * Render one clip in a fresh child process, streaming its progress through.
+ *
+ * Re-invokes this same script with `--clip`, which is the path proven to work in
+ * isolation. The child's exit code is the result; its stdout is echoed so a batch
+ * still reads as one continuous log.
+ */
+function renderInChild(clipId: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn(process.execPath, [process.argv[1] as string, '--clip', clipId], {
+			stdio: ['ignore', 'pipe', 'pipe'],
+			env: process.env,
+		})
+		let stderr = ''
+		// Only the per-stage "… step" lines matter here; the child repeats the
+		// header and summary that the parent already prints.
+		child.stdout.on('data', chunk => {
+			for (const line of String(chunk).split('\n')) {
+				if (line.startsWith('  … ')) console.log(line)
+			}
+		})
+		child.stderr.on('data', chunk => {
+			stderr += String(chunk)
+		})
+		child.on('error', reject)
+		child.on('close', code => {
+			if (code === 0) {
+				resolve()
+				return
+			}
+			// The child prints its own "  ✗ <reason>"; surface that rather than a
+			// bare exit code, falling back to stderr when it died without one.
+			const reported = /^ {2}✗ (.+)$/m.exec(stderr)
+			reject(new Error(reported?.[1] ?? stderr.trim() ?? `child exited ${code}`))
+		})
+	})
 }
 
 async function main(): Promise<void> {
@@ -884,7 +979,7 @@ async function main(): Promise<void> {
 	 * Saying so upfront is what separates "still working" from "wedged" when the
 	 * run goes quiet — the distinction that cost real time during testing.
 	 */
-	const captureSeconds = jobs.reduce((total, job) => total + job.durationSeconds + HANDLE_SECONDS, 0)
+	const captureSeconds = jobs.reduce((total, job) => total + job.durationSeconds + SETUP_SECONDS, 0)
 	console.log(`\n~${Math.ceil(captureSeconds / 60)} min of capture, plus encoding.`)
 
 	if (options.dryRun) return
@@ -893,16 +988,41 @@ async function main(): Promise<void> {
 
 	await mkdir(OUTPUT_DIR, { recursive: true })
 
-	const results: RenderResult[] = []
-	for (const [index, job] of jobs.entries()) {
-		console.log(`\n[${index + 1}/${jobs.length}] ${job.filename} [${job.clip.id}]`)
-		// Per-render scratch, so a crashed run cannot leave a stale .webm that the
-		// next render would pick up as its own.
+	/**
+	 * A single `--clip` run does the work in-process; a multi-clip batch fans out
+	 * to one child per clip. Captures do not survive being run back-to-back in one
+	 * process: clips 1 and 2 render and the THIRD hangs with its browser dead and
+	 * no open handles, reproducibly, while that same clip renders fine on its own.
+	 * Something accumulates in the Playwright client across captures (the same
+	 * shape as the `recordVideo` deadlock this pipeline replaced, one position
+	 * later). A fresh process per clip makes every capture the first one.
+	 */
+	if (jobs.length === 1 && jobs[0] !== undefined) {
+		const job = jobs[0]
 		const workDir = path.join(OUTPUT_DIR, `.work-${job.clip.id}`)
 		await rm(workDir, { recursive: true, force: true })
 		await mkdir(workDir, { recursive: true })
 		try {
 			await renderClip(job, workDir, message => console.log(`  … ${message}`))
+			console.log(`  ✓ ${job.outputPath}`)
+			console.log('\nDone: 1 rendered, 0 failed.')
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error)
+			console.error(`  ✗ ${message}`)
+			console.log('\nDone: 0 rendered, 1 failed.')
+			process.exitCode = 1
+		} finally {
+			await rm(workDir, { recursive: true, force: true })
+		}
+		return
+	}
+
+	const results: RenderResult[] = []
+	for (const [index, job] of jobs.entries()) {
+		console.log(`\n[${index + 1}/${jobs.length}] ${job.filename} [${job.clip.id}]`)
+		try {
+			// `--clip` renders exactly this one, so the child does the work below.
+			await renderInChild(job.clip.id)
 			console.log(`  ✓ ${job.outputPath}`)
 			results.push({ job, ok: true })
 		} catch (error) {
@@ -910,8 +1030,6 @@ async function main(): Promise<void> {
 			const message = error instanceof Error ? error.message : String(error)
 			console.error(`  ✗ ${message}`)
 			results.push({ job, ok: false, error: message })
-		} finally {
-			await rm(workDir, { recursive: true, force: true })
 		}
 	}
 
