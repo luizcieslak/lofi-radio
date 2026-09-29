@@ -170,6 +170,10 @@ class StreamEngine {
 		res.setHeader('Cache-Control', 'no-cache, no-store')
 		res.setHeader('Connection', 'keep-alive')
 		res.setHeader('Transfer-Encoding', 'chunked')
+		// Required, not incidental: cieslak.dev's audio-reactive glow opens this
+		// stream with crossorigin="anonymous" to read samples via Web Audio. Without
+		// this header the browser refuses the response and playback fails for
+		// every listener who enabled the visualizer.
 		res.setHeader('Access-Control-Allow-Origin', '*')
 		// Prevent buffering in nginx/proxies
 		res.setHeader('X-Accel-Buffering', 'no')
