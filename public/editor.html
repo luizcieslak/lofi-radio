@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Scene Editor</title>
+  <!--
+    SCENE EDITOR (campaign branch)
+
+    Marks the slices of each song that become promo videos: start, end, and the
+    light/dark look of the page while it is filmed. scripts/recordClips.ts renders
+    whatever is marked here.
+
+    Playback is LOCAL. The source MP3 is fetched once, decoded with Web Audio, and
+    played from memory, so the playhead is sample-exact and seeks are instant. It
+    never touches /stream: auditioning through the live broadcast put the server's
+    frame pacing and the browser's stream buffer between a click and the sound,
+    which is what made marks land seconds off. Decoding (rather than <audio src>)
+    matters too: the library is VBR, and browsers seek VBR MP3 through a coarse
+    100-entry Xing table, so an <audio> element's currentTime after a seek can be
+    off by hundreds of ms.
+  -->
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    :root {
+      --bg-card: rgba(255, 255, 255, 0.06);
+      --bg-card-hover: rgba(255, 255, 255, 0.1);
+      --border: rgba(255, 255, 255, 0.1);
+      --text-dim: rgba(255, 255, 255, 0.55);
+      --accent: #667eea;
+      --accent-2: #764ba2;
+      --light: #fcd34d;
+      --dark: #818cf8;
+      --playhead: #f87171;
+      --ok: #4ade80;
+      --warn: #fbbf24;
+      --error: #f87171;
+    }
+
+    body {
+      min-height: 100vh;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #fff;
+      font-size: 13px;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      border: none;
+      background: var(--bg-card);
+      border-radius: 6px;
+      padding: 6px 10px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--bg-card-hover);
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+      font-weight: 600;
+    }
+
+    input {
+      font: inherit;
+      color: inherit;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      outline: none;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+    }
+
+    input.invalid {
+      border-color: var(--error);
+    }
+
+    kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      padding: 1px 4px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--text-dim);
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    header h1 {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    header a {
+      color: var(--text-dim);
+      text-decoration: none;
+    }
+
+    header a:hover {
+      color: #fff;
+    }
+
+    #status {
+      margin-left: auto;
+      color: var(--text-dim);
+    }
+
+    #status.ok { color: var(--ok); }
+    #status.error { color: var(--error); }
+
+    /* ── Layout ─────────────────────────────────────────────────────────── */
+
+    /* Mobile-first: the panes stack and the page scrolls. From 1100px up they
+       become three fixed-height columns that scroll independently. */
+    .pane {
+      padding: 16px;
+    }
+
+    .pane + .pane {
+      border-top: 1px solid var(--border);
+    }
+
+    /* ── Track pool ─────────────────────────────────────────────────────── */
+
+    .pool {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 16px 0 0;
+    }
+
+    .pool input {
+      margin: 0 16px;
+    }
+
+    #trackList {
+      max-height: 300px;
+      overflow-y: auto;
+      padding: 0 8px 16px;
+    }
+
+    .track {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      padding: 6px 8px;
+    }
+
+    .track.active {
+      background: rgba(102, 126, 234, 0.25);
+    }
+
+    .track img, .track .no-art {
+      width: 36px;
+      height: 36px;
+      border-radius: 4px;
+      object-fit: cover;
+      flex-shrink: 0;
+      background: var(--bg-card);
+    }
+
+    .track-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .track-title, .track-artist {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .track-artist {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .badge {
+      font-size: 11px;
+      min-width: 20px;
+      text-align: center;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: rgba(74, 222, 128, 0.2);
+      color: var(--ok);
+      flex-shrink: 0;
+    }
+
+    /* ── Editor ─────────────────────────────────────────────────────────── */
+
+    .editor {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .empty {
+      color: var(--text-dim);
+      text-align: center;
+      padding: 60px 20px;
+    }
+
+    .track-head {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .track-head img {
+      width: 56px;
+      height: 56px;
+      border-radius: 6px;
+      object-fit: cover;
+    }
+
+    .track-head h2 {
+      font-size: 17px;
+      font-weight: 600;
+    }
+
+    .track-head p {
+      color: var(--text-dim);
+    }
+
+    .wave-wrap {
+      position: relative;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    #overview {
+      height: 120px;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    #detail {
+      height: 72px;
+      cursor: pointer;
+    }
+
+    .wave-caption {
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-dim);
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .wave-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.35);
+    }
+
+    .transport, .marks {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    #playBtn {
+      min-width: 44px;
+      font-size: 15px;
+    }
+
+    #timecode {
+      font-size: 20px;
+      margin-left: 10px;
+    }
+
+    #duration {
+      color: var(--text-dim);
+    }
+
+    .marks .mark-value {
+      min-width: 76px;
+      color: var(--text-dim);
+    }
+
+    .marks .mark-value.set {
+      color: #fff;
+    }
+
+    .spacer {
+      flex: 1;
+    }
+
+    /* ── Scenes ─────────────────────────────────────────────────────────── */
+
+    .section-title {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+    }
+
+    #sceneList {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .scene {
+      background: var(--bg-card);
+      border: 1px solid transparent;
+      border-left: 3px solid var(--light);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .scene.theme-dark {
+      border-left-color: var(--dark);
+    }
+
+    .scene.selected {
+      border-color: rgba(255, 255, 255, 0.35);
+      background: var(--bg-card-hover);
+    }
+
+    .scene-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .scene input.tc {
+      width: 96px;
+    }
+
+    .scene input.label {
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .scene .dur {
+      color: var(--text-dim);
+      min-width: 52px;
+    }
+
+    .scene .warn {
+      color: var(--warn);
+    }
+
+    .theme-toggle {
+      display: inline-flex;
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .theme-toggle button {
+      border-radius: 0;
+    }
+
+    .theme-toggle button.on[data-theme='light'] {
+      background: rgba(252, 211, 77, 0.3);
+      color: var(--light);
+    }
+
+    .theme-toggle button.on[data-theme='dark'] {
+      background: rgba(129, 140, 248, 0.3);
+      color: var(--dark);
+    }
+
+    /* Inherited from the track rather than set on the scene. */
+    .theme-toggle button.on.inherited {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px currentColor;
+    }
+
+    .icon-btn {
+      padding: 6px 8px;
+    }
+
+    /* ── Stage preview ──────────────────────────────────────────────────── */
+
+    .preview {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .stage {
+      width: 100%;
+      max-width: 300px;
+      aspect-ratio: 9 / 16;
+      border-radius: 8px;
+      overflow: hidden;
+      position: relative;
+      background: rgba(0, 0, 0, 0.35);
+    }
+
+    /* Rendered at the capture's native 1080x1920 and scaled down, so vw-based
+       type and the glow lay out exactly as they will in the recording. */
+    .stage iframe {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 1080px;
+      height: 1920px;
+      border: 0;
+      transform-origin: 0 0;
+    }
+
+    .preview-meta {
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    .preview label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-dim);
+    }
+
+    .preview input[type='url'] {
+      width: 100%;
+    }
+
+    .help {
+      color: var(--text-dim);
+      line-height: 1.9;
+    }
+
+    /* ── Auth ───────────────────────────────────────────────────────────── */
+
+    /* `display` rules on toggled sections are scoped to :not([hidden]); an
+       unscoped one would beat the attribute and leave the section on screen. */
+    #auth:not([hidden]) {
+      max-width: 360px;
+      margin: 80px auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    @media (min-width: 1100px) {
+      body {
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+
+      .layout:not([hidden]) {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr) 300px;
+      }
+
+      .pane {
+        min-height: 0;
+        overflow-y: auto;
+      }
+
+      .pane + .pane {
+        border-top: none;
+        border-left: 1px solid var(--border);
+      }
+
+      .pool {
+        overflow: hidden;
+      }
+
+      #trackList {
+        flex: 1;
+        max-height: none;
+      }
+
+      .stage {
+        max-width: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎬 Scene editor</h1>
+    <a href="/">← Radio</a>
+    <span id="status"></span>
+    <button id="exportBtn" title="Download every scene as JSON">⬇ Export</button>
+  </header>
+
+  <form id="auth" hidden>
+    <p>Enter the radio's API key (<code>RADIO_API_KEY</code>).</p>
+    <input type="password" id="authKey" placeholder="API key" autocomplete="off">
+    <button class="primary" type="submit">Unlock</button>
+    <p id="authError" style="color: var(--error);"></p>
+  </form>
+
+  <div class="layout" id="app" hidden>
+    <aside class="pane pool">
+      <input type="search" id="filter" placeholder="Filter tracks…" autocomplete="off">
+      <div id="trackList"></div>
+    </aside>
+
+    <main class="pane editor" id="editor">
+      <p class="empty">Pick a track from the pool.</p>
+    </main>
+
+    <aside class="pane preview">
+      <div class="section-title">Stage preview</div>
+      <div class="stage" id="stage">
+        <iframe id="stageFrame" title="Stage preview" tabindex="-1"></iframe>
+      </div>
+      <div class="preview-meta" id="previewMeta"></div>
+      <label><input type="checkbox" id="previewOn"> Live preview</label>
+      <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
+      <a id="previewOpen" href="#" target="_blank" rel="noopener" style="color: var(--text-dim);">Open in a tab ↗</a>
+      <div class="help">
+        <kbd>Space</kbd> play / pause<br>
+        <kbd>←</kbd><kbd>→</kbd> ±1s · <kbd>Shift</kbd> ±5s · <kbd>,</kbd><kbd>.</kbd> ±0.1s<br>
+        <kbd>I</kbd> / <kbd>O</kbd> set in / out at the playhead<br>
+        <kbd>Enter</kbd> add scene · <kbd>Esc</kbd> clear in/out<br>
+        <kbd>P</kbd> preview the selected scene as rendered<br>
+        Drag on the waveform to select a range.
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    // ========================================================================
+    // Constants mirrored from scripts/recordClips.ts — that file is what renders,
+    // so keep these in sync. The scene preview reproduces the render's audio: the
+    // marked range exactly, with a FADE_SECONDS fade-out running inside its end.
+    // ========================================================================
+    const FADE_SECONDS = 2;
+    const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage';
+
+    /** Width of the zoomed strip under the overview, centred on the playhead. */
+    const DETAIL_WINDOW_SECONDS = 10;
+
+    const DEFAULT_SITE_URL = 'http://localhost:4321';
+    const KEY_STORAGE = 'radio_api_key'; // shared with the admin panel on /
+    const SITE_STORAGE = 'scene_editor_site_url';
+    const PREVIEW_STORAGE = 'scene_editor_preview_on';
+
+    const COLORS = {
+      light: { fill: 'rgba(252, 211, 77, 0.28)', edge: '#fcd34d' },
+      dark: { fill: 'rgba(129, 140, 248, 0.32)', edge: '#818cf8' },
+      selection: 'rgba(255, 255, 255, 0.16)',
+      wave: 'rgba(255, 255, 255, 0.72)',
+      grid: 'rgba(255, 255, 255, 0.08)',
+      label: 'rgba(255, 255, 255, 0.45)',
+      playhead: '#f87171',
+      hover: 'rgba(255, 255, 255, 0.4)',
+    };
+
+    // ========================================================================
+    // Storage — every access guarded: a blocked or private-mode store must not
+    // take the editor down with it.
+    // ========================================================================
+    function readStorage(key) {
+      try { return localStorage.getItem(key); } catch { return null; }
+    }
+
+    function writeStorage(key, value) {
+      try {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      } catch {}
+    }
+
+    // ========================================================================
+    // State
+    // ========================================================================
+    const state = {
+      apiKey: readStorage(KEY_STORAGE) || '',
+      /** Public playlist tracks, each with its `filename` derived from `path`. */
+      tracks: [],
+      /** filename -> Clip[], as stored by the server. */
+      clips: {},
+      filter: '',
+      /** The loaded track: { filename, track, buffer, overviewPeaks } */
+      current: null,
+      /** The in/out being marked, in seconds; either end may be unset. */
+      selection: { start: null, end: null },
+      selectedClipId: null,
+      /** Guards against a slow decode landing after a newer track was picked. */
+      loadToken: 0,
+    };
+
+    // ========================================================================
+    // Helpers
+    // ========================================================================
+    const $ = id => document.getElementById(id);
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function filenameOf(track) {
+      return track.path.split('/').pop();
+    }
+
+    /** m:ss.mmm — round-trips through parseTimestamp. */
+    function formatTime(ms) {
+      const total = Math.max(0, Math.round(ms));
+      const minutes = Math.floor(total / 60000);
+      const seconds = Math.floor((total % 60000) / 1000);
+      const millis = total % 1000;
+      return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+    }
+
+    function formatShort(seconds) {
+      const s = Math.max(0, Math.round(seconds));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+
+    /**
+     * Parse a hand-typed timestamp into milliseconds.
+     *   "1:23" -> 83000   "1:23.5" -> 83500   "1:02:03" -> 3723000   "83000" -> 83000
+     * A bare number is milliseconds, matching the exported JSON (the other thing
+     * you'd paste from). Returns null when unparseable, so 0 stays distinguishable.
+     *
+     * Mirrors parseTimestamp in src/clipValidation.ts — that copy is the tested
+     * one; keep the two in sync if the accepted formats change.
+     */
+    function parseTimestamp(input) {
+      const trimmed = String(input).trim();
+      if (trimmed === '') return null;
+
+      if (trimmed.includes(':')) {
+        const parts = trimmed.split(':');
+        if (parts.length > 3) return null;
+
+        let total = 0;
+        for (let i = 0; i < parts.length; i++) {
+          const isLast = i === parts.length - 1;
+          const pattern = isLast ? /^\d+(\.\d+)?$/ : /^\d+$/;
+          if (!pattern.test(parts[i])) return null;
+
+          const value = Number(parts[i]);
+          if (!Number.isFinite(value)) return null;
+          if (i > 0 && value >= 60) return null;
+
+          total = total * 60 + value;
+        }
+        return Math.round(total * 1000);
+      }
+
+      if (!/^\d+(\.\d+)?$/.test(trimmed)) return null;
+      const ms = Number(trimmed);
+      return Number.isFinite(ms) ? ms : null;
+    }
+
+    let statusTimer = null;
+    function setStatus(message, kind = '') {
+      const el = $('status');
+      el.textContent = message;
+      el.className = kind;
+      if (statusTimer) clearTimeout(statusTimer);
+      if (kind === 'ok') statusTimer = setTimeout(() => { el.textContent = ''; }, 2000);
+    }
+
+    async function api(pathname, options = {}) {
+      const response = await fetch(pathname, {
+        ...options,
+        headers: { 'X-API-Key': state.apiKey, ...(options.headers || {}) },
+      });
+      if (response.status === 401) {
+        showAuth('That key was rejected.');
+        throw new Error('Unauthorized');
+      }
+      return response;
+    }
+
+    // ========================================================================
+    // Scene helpers
+    // ========================================================================
+    function currentClips() {
+      if (!state.current) return [];
+      return state.clips[state.current.filename] || [];
+    }
+
+    function sortedClips() {
+      return [...currentClips()].sort((a, b) => a.startMs - b.startMs);
+    }
+
+    function selectedClip() {
+      return currentClips().find(clip => clip.id === state.selectedClipId) || null;
+    }
+
+    /** A scene's look: its own theme, else the track's, else none (page default). */
+    function resolveTheme(clip) {
+      return clip?.theme ?? state.current?.track.theme ?? null;
+    }
+
+    function durationSeconds() {
+      return state.current ? state.current.buffer.duration : 0;
+    }
+
+    /**
+     * Apply a change to the current track's scenes and save the whole list.
+     *
+     * Saves are serialized, and each mutation reads the list at the moment it
+     * runs rather than when it was queued: the PUT replaces the list wholesale,
+     * so two overlapping edits computed from the same snapshot would otherwise
+     * silently drop one of them.
+     */
+    let saveQueue = Promise.resolve();
+    function mutateClips(mutate) {
+      const filename = state.current?.filename;
+      if (!filename) return Promise.resolve(null);
+
+      const task = async () => {
+        const next = mutate((state.clips[filename] || []).map(clip => ({ ...clip })));
+        setStatus('Saving…');
+        try {
+          const response = await api(`/admin/tracks/${encodeURIComponent(filename)}/clips`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clips: next }),
+          });
+          const body = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+
+          if (body.clips.length > 0) state.clips[filename] = body.clips;
+          else delete state.clips[filename];
+          setStatus('Saved ✓', 'ok');
+          return body.clips;
+        } catch (error) {
+          setStatus(`Save failed: ${error.message}`, 'error');
+          return null;
+        } finally {
+          renderScenes();
+          renderTrackList();
+          invalidateWaveform();
+          updatePreview();
+        }
+      };
+
+      const run = saveQueue.then(task);
+      saveQueue = run.catch(() => {});
+      return run;
+    }
+
+    // ========================================================================
+    // Playback (Web Audio)
+    //
+    // The buffer is played by a one-shot AudioBufferSourceNode; seeking stops it
+    // and starts a fresh one at the new offset. The playhead is derived from the
+    // audio clock, and from the time actually reaching the speakers
+    // (getOutputTimestamp) rather than the time being scheduled — otherwise the
+    // readout runs ahead of what you hear by the output latency, which is
+    // tens of ms on wired output and can be ~200ms on Bluetooth.
+    // ========================================================================
+    const player = {
+      ctx: null,
+      source: null,
+      playing: false,
+      /** Offset (s) when paused; the anchor's offset while playing. */
+      offset: 0,
+      anchorContextTime: 0,
+      /** Set while a scene preview plays, so the transport can say so. */
+      previewClipId: null,
+    };
+
+    function audioContext() {
+      if (!player.ctx) player.ctx = new AudioContext();
+      return player.ctx;
+    }
+
+    function heardContextTime(ctx) {
+      if (typeof ctx.getOutputTimestamp === 'function') {
+        const { contextTime } = ctx.getOutputTimestamp();
+        if (typeof contextTime === 'number' && contextTime > 0) return contextTime;
+      }
+      return ctx.currentTime - (ctx.outputLatency || 0);
+    }
+
+    function position() {
+      if (!player.playing || !player.ctx) return player.offset;
+      const elapsed = Math.max(0, heardContextTime(player.ctx) - player.anchorContextTime);
+      return Math.min(durationSeconds(), player.offset + elapsed);
+    }
+
+    function stopSource() {
+      const source = player.source;
+      if (!source) return;
+      player.source = null;
+      source.onended = null;
+      try { source.stop(); } catch {}
+    }
+
+    /**
+     * Play from `from` seconds. With `until`, stop there; with `fade`, ramp the
+     * gain to silence over the last `fade` seconds before `until`.
+     */
+    function play(from, { until = durationSeconds(), fade = 0, previewClipId = null } = {}) {
+      if (!state.current) return;
+      const ctx = audioContext();
+      void ctx.resume();
+      stopSource();
+
+      const start = Math.min(Math.max(0, from), durationSeconds());
+      if (until - start <= 0.01) {
+        player.offset = start;
+        player.playing = false;
+        renderTransport();
+        return;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = state.current.buffer;
+      const gain = ctx.createGain();
+      source.connect(gain).connect(ctx.destination);
+
+      const now = ctx.currentTime;
+      if (fade > 0) {
+        gain.gain.setValueAtTime(1, now + (until - fade - start));
+        gain.gain.linearRampToValueAtTime(0, now + (until - start));
+      }
+      source.start(now, start, until - start);
+      source.onended = () => {
+        if (player.source !== source) return;
+        player.source = null;
+        player.playing = false;
+        player.offset = until;
+        player.previewClipId = null;
+        renderTransport();
+      };
+
+      Object.assign(player, {
+        source,
+        playing: true,
+        offset: start,
+        anchorContextTime: now,
+        previewClipId,
+      });
+      renderTransport();
+    }
+
+    function pause() {
+      if (!player.playing) return;
+      player.offset = position();
+      stopSource();
+      player.playing = false;
+      player.previewClipId = null;
+      renderTransport();
+    }
+
+    function togglePlay() {
+      if (!state.current) return;
+      if (player.playing) {
+        pause();
+        return;
+      }
+      const at = position() >= durationSeconds() - 0.01 ? 0 : position();
+      play(at);
+    }
+
+    /** Move the playhead, continuing playback (not a preview) if it was playing. */
+    function seek(seconds) {
+      if (!state.current) return;
+      const target = Math.min(Math.max(0, seconds), durationSeconds());
+      if (player.playing) {
+        play(target);
+      } else {
+        player.offset = target;
+        renderTransport();
+      }
+    }
+
+    function nudge(delta) {
+      seek(position() + delta);
+    }
+
+    /**
+     * Play a scene exactly as the recorder will render it: the marked range, with
+     * the fade inside its end (shrunk to half the scene on very short ones).
+     */
+    function previewClip(clip) {
+      const start = clip.startMs / 1000;
+      const end = Math.min(durationSeconds(), clip.endMs / 1000);
+      play(start, {
+        until: end,
+        fade: Math.min(FADE_SECONDS, (end - start) / 2),
+        previewClipId: clip.id,
+      });
+    }
+
+    // ========================================================================
+    // Waveform
+    // ========================================================================
+    /**
+     * Min/max per bucket over [startSec, endSec), across all channels. Buckets
+     * that fall outside the track come back as zeros, so the detail strip can run
+     * past either end of the song.
+     */
+    function computePeaks(buffer, startSec, endSec, buckets) {
+      const rate = buffer.sampleRate;
+      const channels = [];
+      for (let c = 0; c < buffer.numberOfChannels; c++) channels.push(buffer.getChannelData(c));
+
+      const peaks = new Float32Array(buckets * 2);
+      const samplesPerBucket = ((endSec - startSec) * rate) / buckets;
+      const origin = startSec * rate;
+
+      for (let b = 0; b < buckets; b++) {
+        const from = Math.max(0, Math.floor(origin + b * samplesPerBucket));
+        const to = Math.min(buffer.length, Math.floor(origin + (b + 1) * samplesPerBucket));
+        let min = 0;
+        let max = 0;
+        for (const data of channels) {
+          for (let i = from; i < to; i++) {
+            const v = data[i];
+            if (v < min) min = v;
+            else if (v > max) max = v;
+          }
+        }
+        peaks[b * 2] = min;
+        peaks[b * 2 + 1] = max;
+      }
+      return peaks;
+    }
+
+    /** Resize a canvas's backing store to its CSS box at device resolution. */
+    function fitCanvas(canvas) {
+      const dpr = window.devicePixelRatio || 1;
+      const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+      const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        return true;
+      }
+      return false;
+    }
+
+    function drawPeaks(ctx, peaks, width, height) {
+      const mid = height / 2;
+      ctx.fillStyle = COLORS.wave;
+      const buckets = peaks.length / 2;
+      for (let x = 0; x < buckets && x < width; x++) {
+        const min = peaks[x * 2];
+        const max = peaks[x * 2 + 1];
+        const top = mid - max * mid * 0.95;
+        const bottom = mid - min * mid * 0.95;
+        ctx.fillRect(x, top, 1, Math.max(1, bottom - top));
+      }
+    }
+
+    /**
+     * Scenes, the in/out selection, and time
+     * ticks, for a view covering [viewStart, viewEnd] seconds.
+     */
+    function drawOverlays(ctx, viewStart, viewEnd, width, height, tickEvery) {
+      const dpr = window.devicePixelRatio || 1;
+      const xOf = t => ((t - viewStart) / (viewEnd - viewStart)) * width;
+
+      // Ticks
+      ctx.fillStyle = COLORS.grid;
+      ctx.font = `${10 * dpr}px ui-monospace, monospace`;
+      const firstTick = Math.ceil(viewStart / tickEvery) * tickEvery;
+      for (let t = Math.max(0, firstTick); t <= viewEnd; t += tickEvery) {
+        const x = Math.round(xOf(t));
+        ctx.fillStyle = COLORS.grid;
+        ctx.fillRect(x, 0, 1, height);
+        ctx.fillStyle = COLORS.label;
+        ctx.fillText(formatShort(t), x + 3 * dpr, 11 * dpr);
+      }
+
+      // Scenes
+      for (const clip of currentClips()) {
+        const theme = resolveTheme(clip) === 'dark' ? COLORS.dark : COLORS.light;
+        ctx.fillStyle = theme.fill;
+        const x0 = xOf(clip.startMs / 1000);
+        const x1 = xOf(clip.endMs / 1000);
+        ctx.fillRect(x0, 0, x1 - x0, height);
+        ctx.fillStyle = theme.edge;
+        const edge = clip.id === state.selectedClipId ? 2 * dpr : dpr;
+        ctx.fillRect(x0, 0, edge, height);
+        ctx.fillRect(x1 - edge, 0, edge, height);
+        if (clip.id === state.selectedClipId) {
+          ctx.fillRect(x0, 0, x1 - x0, 3 * dpr);
+          ctx.fillRect(x0, height - 3 * dpr, x1 - x0, 3 * dpr);
+        }
+      }
+
+      // In/out selection
+      const { start, end } = state.selection;
+      if (start !== null && end !== null) {
+        ctx.fillStyle = COLORS.selection;
+        ctx.fillRect(xOf(start), 0, xOf(end) - xOf(start), height);
+      }
+      ctx.fillStyle = '#fff';
+      for (const t of [start, end]) {
+        if (t !== null) ctx.fillRect(xOf(t) - dpr, 0, 2 * dpr, height);
+      }
+    }
+
+    function drawPlayhead(ctx, x, height) {
+      const dpr = window.devicePixelRatio || 1;
+      ctx.fillStyle = COLORS.playhead;
+      ctx.fillRect(Math.round(x) - dpr, 0, 2 * dpr, height);
+    }
+
+    // The overview's waveform + scenes only change on edits, so they are drawn
+    // once into an offscreen layer; each frame just composites it and adds the
+    // playhead.
+    const overviewLayer = document.createElement('canvas');
+    let waveformDirty = true;
+    let hoverX = null;
+
+    function invalidateWaveform() {
+      waveformDirty = true;
+    }
+
+    function rebuildOverviewLayer(canvas) {
+      const cur = state.current;
+      overviewLayer.width = canvas.width;
+      overviewLayer.height = canvas.height;
+      const ctx = overviewLayer.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (!cur.overviewPeaks || cur.overviewPeaks.length / 2 !== canvas.width) {
+        cur.overviewPeaks = computePeaks(cur.buffer, 0, cur.buffer.duration, canvas.width);
+      }
+      const duration = cur.buffer.duration;
+      drawOverlays(ctx, 0, duration, canvas.width, canvas.height, duration > 300 ? 60 : 30);
+      drawPeaks(ctx, cur.overviewPeaks, canvas.width, canvas.height);
+    }
+
+    function drawOverview(pos) {
+      const canvas = $('overview');
+      if (!canvas) return;
+      if (fitCanvas(canvas)) waveformDirty = true;
+      if (waveformDirty) {
+        rebuildOverviewLayer(canvas);
+        waveformDirty = false;
+      }
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(overviewLayer, 0, 0);
+
+      const duration = durationSeconds();
+      if (hoverX !== null) {
+        const dpr = window.devicePixelRatio || 1;
+        ctx.fillStyle = COLORS.hover;
+        ctx.fillRect(Math.round(hoverX * dpr), 0, dpr, canvas.height);
+      }
+      drawPlayhead(ctx, (pos / duration) * canvas.width, canvas.height);
+    }
+
+    function drawDetail(pos) {
+      const canvas = $('detail');
+      if (!canvas) return;
+      fitCanvas(canvas);
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const viewStart = pos - DETAIL_WINDOW_SECONDS / 2;
+      const viewEnd = pos + DETAIL_WINDOW_SECONDS / 2;
+      drawOverlays(ctx, viewStart, viewEnd, canvas.width, canvas.height, 1);
+      drawPeaks(ctx, computePeaks(state.current.buffer, viewStart, viewEnd, canvas.width), canvas.width, canvas.height);
+      drawPlayhead(ctx, canvas.width / 2, canvas.height);
+    }
+
+    // One loop drives both canvases and the timecode, redrawing only when the
+    // playhead moved or something invalidated the picture.
+    let lastDrawnPos = -1;
+    let forceDraw = true;
+    function frame() {
+      requestAnimationFrame(frame);
+      if (!state.current || !$('overview')) return;
+      const pos = position();
+      if (pos === lastDrawnPos && !waveformDirty && !forceDraw) return;
+      lastDrawnPos = pos;
+      forceDraw = false;
+      drawOverview(pos);
+      drawDetail(pos);
+      $('timecode').textContent = formatTime(pos * 1000);
+    }
+    requestAnimationFrame(frame);
+
+    function redraw() {
+      forceDraw = true;
+    }
+
+    // ========================================================================
+    // Rendering: track pool
+    //
+    // Cover <img>s here are CORS requests (crossorigin="anonymous") on purpose.
+    // The CDN only sends Access-Control-Allow-Origin when a request carries an
+    // Origin header, and its plain responses have no `Vary: Origin` — so a plain
+    // <img> load caches a CORS-less copy, which the stage preview's iframe (same
+    // cache partition, and the site loads covers with crossorigin for the glow)
+    // then reuses and gets blocked on, leaving the preview without its artwork.
+    // ========================================================================
+    function renderTrackList() {
+      const filter = state.filter.trim().toLowerCase();
+      const list = $('trackList');
+      const visible = state.tracks.filter(track =>
+        !filter || `${track.title} ${track.artist} ${track.filename}`.toLowerCase().includes(filter),
+      );
+
+      list.innerHTML = visible.map(track => {
+        const count = (state.clips[track.filename] || []).length;
+        const active = state.current?.filename === track.filename;
+        const art = track.albumArtUrl
+          ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" loading="lazy" crossorigin="anonymous">`
+          : '<span class="no-art"></span>';
+        return `
+          <button class="track${active ? ' active' : ''}" data-filename="${escapeHtml(track.filename)}">
+            ${art}
+            <span class="track-text">
+              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+            </span>
+            ${count > 0 ? `<span class="badge" title="${count} scene(s)">${count}</span>` : ''}
+          </button>`;
+      }).join('') || '<p class="empty">No tracks match.</p>';
+    }
+
+    // ========================================================================
+    // Rendering: editor
+    // ========================================================================
+    function renderEditorShell(track, loading) {
+      const art = track.albumArtUrl ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" crossorigin="anonymous">` : '';
+      $('editor').innerHTML = `
+        <div class="track-head">
+          ${art}
+          <div>
+            <h2>${escapeHtml(track.title)}</h2>
+            <p>${escapeHtml(track.artist)}${track.album ? ` · <em>${escapeHtml(track.album)}</em>` : ''}</p>
+          </div>
+        </div>
+
+        <div>
+          <div class="wave-wrap">
+            <canvas id="overview"></canvas>
+            ${loading ? '<div class="wave-loading" id="waveLoading">Decoding…</div>' : ''}
+          </div>
+          <div class="wave-caption"><span>Whole track — click to seek, drag to select</span><span>Scenes tinted by their theme</span></div>
+        </div>
+        <div>
+          <canvas id="detail"></canvas>
+          <div class="wave-caption"><span>±${DETAIL_WINDOW_SECONDS / 2}s around the playhead — click to seek</span></div>
+        </div>
+
+        <div class="transport">
+          <button id="toStart" title="Back to 0:00">⏮</button>
+          <button data-nudge="-5">−5s</button>
+          <button data-nudge="-1">−1s</button>
+          <button data-nudge="-0.1">−0.1</button>
+          <button id="playBtn" class="primary" title="Play / pause (Space)">▶</button>
+          <button data-nudge="0.1">+0.1</button>
+          <button data-nudge="1">+1s</button>
+          <button data-nudge="5">+5s</button>
+          <span id="timecode" class="mono">0:00.000</span>
+          <span id="duration" class="mono"></span>
+          <span class="spacer"></span>
+          <span id="previewState" style="color: var(--text-dim);"></span>
+        </div>
+
+        <div class="marks">
+          <button id="setIn" title="Set in at the playhead (I)">⌖ In <kbd>I</kbd></button>
+          <span class="mark-value mono" id="inValue">—</span>
+          <button id="setOut" title="Set out at the playhead (O)">⌖ Out <kbd>O</kbd></button>
+          <span class="mark-value mono" id="outValue">—</span>
+          <button id="addScene" class="primary" title="Add the in/out range as a scene (Enter)">+ Add scene</button>
+          <button id="clearSel" title="Clear in/out (Esc)">✕</button>
+        </div>
+
+        <div class="section-title">Scenes <span id="sceneCount"></span></div>
+        <div id="sceneList"></div>
+      `;
+
+      bindEditor();
+    }
+
+    function renderTransport() {
+      const playBtn = $('playBtn');
+      if (!playBtn) return;
+      playBtn.textContent = player.playing ? '❚❚' : '▶';
+      $('duration').textContent = state.current?.buffer ? `/ ${formatTime(durationSeconds() * 1000)}` : '';
+
+      const previewing = player.previewClipId
+        ? currentClips().find(clip => clip.id === player.previewClipId)
+        : null;
+      $('previewState').textContent = previewing
+        ? `Previewing scene as rendered (${FADE_SECONDS}s fade-out)`
+        : '';
+      redraw();
+    }
+
+    function renderSelection() {
+      const { start, end } = state.selection;
+      const inEl = $('inValue');
+      if (!inEl) return;
+      inEl.textContent = start === null ? '—' : formatTime(start * 1000);
+      inEl.classList.toggle('set', start !== null);
+      $('outValue').textContent = end === null ? '—' : formatTime(end * 1000);
+      $('outValue').classList.toggle('set', end !== null);
+      $('addScene').disabled = !(start !== null && end !== null && end > start);
+      invalidateWaveform();
+    }
+
+    function sceneWarnings(clip) {
+      const warnings = [];
+      if (clip.endMs <= clip.startMs) warnings.push('ends before it starts');
+      if (state.current?.buffer && clip.endMs > durationSeconds() * 1000 + 50) {
+        warnings.push('runs past the end of the track — the render would come out short');
+      }
+      return warnings;
+    }
+
+    function renderScenes() {
+      const list = $('sceneList');
+      if (!list) return;
+      const clips = sortedClips();
+      $('sceneCount').textContent = clips.length ? `(${clips.length})` : '';
+
+      if (clips.length === 0) {
+        list.innerHTML = '<p class="empty" style="padding: 20px;">No scenes yet. Mark an in and an out, then add one.</p>';
+        return;
+      }
+
+      list.innerHTML = clips.map(clip => {
+        const theme = resolveTheme(clip);
+        const inherited = !clip.theme;
+        const warnings = sceneWarnings(clip);
+        const seconds = (clip.endMs - clip.startMs) / 1000;
+        const themeButton = value => {
+          const on = theme === value;
+          const cls = `${on ? 'on' : ''}${on && inherited ? ' inherited' : ''}`;
+          const title = on && inherited ? `Inherited from the track — click to set it on this scene` : '';
+          return `<button data-act="theme" data-theme="${value}" class="${cls}" title="${title}">${value === 'light' ? '☀ Light' : '☾ Dark'}</button>`;
+        };
+        return `
+          <div class="scene theme-${theme === 'dark' ? 'dark' : 'light'}${clip.id === state.selectedClipId ? ' selected' : ''}" data-id="${escapeHtml(clip.id)}">
+            <div class="scene-row">
+              <button class="icon-btn" data-act="preview" title="Preview as rendered, with the ${FADE_SECONDS}s fade-out (P)">▶</button>
+              <input class="tc mono" data-field="startMs" value="${formatTime(clip.startMs)}" aria-label="Start">
+              <button class="icon-btn" data-act="start-here" title="Set start to the playhead">⤒</button>
+              <span>→</span>
+              <input class="tc mono" data-field="endMs" value="${formatTime(clip.endMs)}" aria-label="End">
+              <button class="icon-btn" data-act="end-here" title="Set end to the playhead">⤓</button>
+              <span class="dur mono">${seconds.toFixed(1)}s</span>
+              ${warnings.length ? `<span class="warn" title="${escapeHtml(warnings.join('; '))}">⚠</span>` : ''}
+            </div>
+            <div class="scene-row">
+              <span class="theme-toggle">${themeButton('light')}${themeButton('dark')}</span>
+              <input class="label" data-field="label" value="${escapeHtml(clip.label || '')}" placeholder="Label (optional)" maxlength="200">
+              <button class="icon-btn" data-act="delete" title="Delete scene">🗑</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    // ========================================================================
+    // Stage preview (cieslak-dev in pinned-track mode)
+    // ========================================================================
+    function siteUrl() {
+      return (readStorage(SITE_STORAGE) || DEFAULT_SITE_URL).replace(/\/+$/, '');
+    }
+
+    function stageUrl(filename, theme) {
+      const themeParam = theme ? `&theme=${theme}` : '';
+      return `${siteUrl()}/en/radio/?${PAGE_FLAGS}&track=${encodeURIComponent(filename)}${themeParam}`;
+    }
+
+    function updatePreview() {
+      const frameEl = $('stageFrame');
+      const meta = $('previewMeta');
+      const open = $('previewOpen');
+      if (!state.current) {
+        meta.textContent = '';
+        return;
+      }
+
+      const clip = selectedClip();
+      const theme = resolveTheme(clip);
+      const url = stageUrl(state.current.filename, theme);
+      open.href = url;
+      meta.innerHTML = `${clip ? `Scene ${formatShort(clip.startMs / 1000)}–${formatShort(clip.endMs / 1000)}` : 'Track default'}
+        · <strong>${theme || 'page default'}</strong>`;
+
+      if (!$('previewOn').checked) {
+        if (frameEl.getAttribute('src')) frameEl.removeAttribute('src');
+        return;
+      }
+      // Swap only on change: the page reads ?theme= before first paint, so a new
+      // look needs a fresh load, but reloading an identical URL just flickers.
+      if (frameEl.getAttribute('src') !== url) frameEl.setAttribute('src', url);
+    }
+
+    function fitStage() {
+      const stage = $('stage');
+      $('stageFrame').style.transform = `scale(${stage.clientWidth / 1080})`;
+    }
+
+    // ========================================================================
+    // Actions
+    // ========================================================================
+    async function loadTrack(filename) {
+      const track = state.tracks.find(t => t.filename === filename);
+      if (!track) return;
+
+      pause();
+      stopSource();
+      const token = ++state.loadToken;
+      state.current = null;
+      state.selection = { start: null, end: null };
+      state.selectedClipId = null;
+      player.offset = 0;
+      history.replaceState(null, '', `#${encodeURIComponent(filename)}`);
+      renderTrackList();
+      $('trackList').querySelector('.track.active')?.scrollIntoView({ block: 'nearest' });
+      renderEditorShell(track, true);
+
+      try {
+        const response = await api(`/admin/songs/${encodeURIComponent(filename)}/audio`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bytes = await response.arrayBuffer();
+        const buffer = await audioContext().decodeAudioData(bytes);
+        if (token !== state.loadToken) return;
+
+        state.current = { filename, track, buffer, overviewPeaks: null };
+        $('waveLoading')?.remove();
+        invalidateWaveform();
+        renderTransport();
+        renderSelection();
+        renderScenes();
+        updatePreview();
+      } catch (error) {
+        if (token !== state.loadToken) return;
+        const loading = $('waveLoading');
+        if (loading) loading.textContent = `Could not load audio: ${error.message}`;
+      }
+    }
+
+    function setIn() {
+      if (!state.current) return;
+      const t = position();
+      state.selection.start = t;
+      if (state.selection.end !== null && state.selection.end <= t) state.selection.end = null;
+      renderSelection();
+    }
+
+    function setOut() {
+      if (!state.current) return;
+      const t = position();
+      state.selection.end = t;
+      if (state.selection.start !== null && state.selection.start >= t) state.selection.start = null;
+      renderSelection();
+    }
+
+    function clearSelection() {
+      state.selection = { start: null, end: null };
+      renderSelection();
+    }
+
+    async function addScene() {
+      const { start, end } = state.selection;
+      if (start === null || end === null || end <= start) return;
+
+      // The track's own theme is the natural default for its scenes; fall back
+      // to light so every new scene carries an explicit look.
+      const theme = state.current.track.theme ?? 'light';
+      const startMs = Math.round(start * 1000);
+      const endMs = Math.round(end * 1000);
+      const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme }]);
+      if (!saved) return;
+
+      const added = saved.find(clip => clip.startMs === startMs && clip.endMs === endMs);
+      state.selectedClipId = added?.id ?? null;
+      clearSelection();
+      renderScenes();
+      updatePreview();
+    }
+
+    function selectScene(id) {
+      state.selectedClipId = id;
+      renderScenes();
+      invalidateWaveform();
+      updatePreview();
+    }
+
+    function updateScene(id, changes) {
+      return mutateClips(clips => clips.map(clip => {
+        if (clip.id !== id) return clip;
+        const next = { ...clip, ...changes };
+        for (const key of Object.keys(next)) {
+          if (next[key] === undefined) delete next[key];
+        }
+        return next;
+      }));
+    }
+
+    async function exportScenes() {
+      try {
+        const response = await api('/admin/clips');
+        const body = await response.json();
+        const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `scenes-${new Date().toISOString().slice(0, 10)}.json`;
+        link.click();
+        URL.revokeObjectURL(link.href);
+      } catch (error) {
+        setStatus(`Export failed: ${error.message}`, 'error');
+      }
+    }
+
+    // ========================================================================
+    // Event wiring
+    // ========================================================================
+    function timeAtOverview(event) {
+      const canvas = $('overview');
+      const ratio = event.offsetX / canvas.clientWidth;
+      return Math.min(Math.max(0, ratio), 1) * durationSeconds();
+    }
+
+    function bindEditor() {
+      $('playBtn').addEventListener('click', togglePlay);
+      $('toStart').addEventListener('click', () => seek(0));
+      document.querySelectorAll('[data-nudge]').forEach(button => {
+        button.addEventListener('click', () => nudge(Number(button.dataset.nudge)));
+      });
+      $('setIn').addEventListener('click', setIn);
+      $('setOut').addEventListener('click', setOut);
+      $('addScene').addEventListener('click', addScene);
+      $('clearSel').addEventListener('click', clearSelection);
+
+      // Overview: click seeks, drag selects a range for a new scene.
+      const overview = $('overview');
+      let drag = null;
+      overview.addEventListener('pointerdown', event => {
+        if (!state.current) return;
+        overview.setPointerCapture(event.pointerId);
+        drag = { x: event.offsetX, t: timeAtOverview(event), moved: false };
+      });
+      overview.addEventListener('pointermove', event => {
+        hoverX = event.offsetX;
+        redraw();
+        if (!drag) return;
+        if (Math.abs(event.offsetX - drag.x) > 4) drag.moved = true;
+        if (drag.moved) {
+          const t = timeAtOverview(event);
+          state.selection = { start: Math.min(drag.t, t), end: Math.max(drag.t, t) };
+          renderSelection();
+        }
+      });
+      overview.addEventListener('pointerup', event => {
+        if (!drag) return;
+        if (!drag.moved) seek(timeAtOverview(event));
+        drag = null;
+      });
+      overview.addEventListener('pointerleave', () => {
+        hoverX = null;
+        redraw();
+      });
+
+      // Detail: click seeks within the zoomed window around the playhead.
+      const detail = $('detail');
+      detail.addEventListener('click', event => {
+        if (!state.current) return;
+        const ratio = event.offsetX / detail.clientWidth;
+        seek(position() + (ratio - 0.5) * DETAIL_WINDOW_SECONDS);
+      });
+
+      const sceneList = $('sceneList');
+      sceneList.addEventListener('click', event => {
+        const row = event.target.closest('.scene');
+        if (!row) return;
+        const id = row.dataset.id;
+        const clip = currentClips().find(c => c.id === id);
+        if (!clip) return;
+
+        const button = event.target.closest('button');
+        if (!button) {
+          if (event.target.closest('input')) {
+            if (state.selectedClipId !== id) selectScene(id);
+            return;
+          }
+          selectScene(id);
+          seek(clip.startMs / 1000);
+          return;
+        }
+
+        switch (button.dataset.act) {
+          case 'preview':
+            selectScene(id);
+            previewClip(clip);
+            break;
+          case 'start-here': {
+            const startMs = Math.round(position() * 1000);
+            if (startMs >= clip.endMs) {
+              setStatus('The playhead is past this scene\'s end', 'error');
+              return;
+            }
+            void updateScene(id, { startMs });
+            break;
+          }
+          case 'end-here': {
+            const endMs = Math.round(position() * 1000);
+            if (endMs <= clip.startMs) {
+              setStatus('The playhead is before this scene\'s start', 'error');
+              return;
+            }
+            void updateScene(id, { endMs });
+            break;
+          }
+          case 'theme':
+            state.selectedClipId = id;
+            void updateScene(id, { theme: button.dataset.theme });
+            break;
+          case 'delete':
+            if (!confirm(`Delete the scene at ${formatShort(clip.startMs / 1000)}?`)) return;
+            if (state.selectedClipId === id) state.selectedClipId = null;
+            void mutateClips(clips => clips.filter(c => c.id !== id));
+            break;
+        }
+      });
+
+      // Typed edits commit on change (blur or Enter), and are validated here so
+      // a typo is flagged in place instead of bouncing off the server.
+      sceneList.addEventListener('change', event => {
+        const input = event.target;
+        const row = input.closest('.scene');
+        const clip = row && currentClips().find(c => c.id === row.dataset.id);
+        if (!clip) return;
+
+        const field = input.dataset.field;
+        if (field === 'label') {
+          void updateScene(clip.id, { label: input.value.trim() || undefined });
+          return;
+        }
+
+        const ms = parseTimestamp(input.value);
+        const next = { startMs: clip.startMs, endMs: clip.endMs, [field]: ms };
+        if (ms === null || next.endMs <= next.startMs) {
+          input.classList.add('invalid');
+          setStatus(ms === null ? 'Use m:ss, m:ss.mmm, h:mm:ss or milliseconds' : 'End must be after start', 'error');
+          return;
+        }
+        input.classList.remove('invalid');
+        void updateScene(clip.id, { [field]: Math.round(ms) });
+      });
+      sceneList.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && event.target.matches('input')) event.target.blur();
+        if (event.key === 'Escape' && event.target.matches('input')) {
+          event.target.classList.remove('invalid');
+          renderScenes();
+        }
+      });
+    }
+
+    document.addEventListener('keydown', event => {
+      const target = event.target;
+      if (target instanceof Element && target.closest('input, textarea, select')) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (!state.current) return;
+
+      const step = event.shiftKey ? 5 : 1;
+      switch (event.key) {
+        case ' ':
+          event.preventDefault();
+          togglePlay();
+          break;
+        case 'ArrowLeft':
+          event.preventDefault();
+          nudge(-step);
+          break;
+        case 'ArrowRight':
+          event.preventDefault();
+          nudge(step);
+          break;
+        case ',':
+          nudge(-0.1);
+          break;
+        case '.':
+          nudge(0.1);
+          break;
+        case 'i':
+        case 'I':
+          setIn();
+          break;
+        case 'o':
+        case 'O':
+          setOut();
+          break;
+        case 'Enter':
+          event.preventDefault();
+          void addScene();
+          break;
+        case 'Escape':
+          clearSelection();
+          break;
+        case 'p':
+        case 'P': {
+          const clip = selectedClip();
+          if (clip) previewClip(clip);
+          break;
+        }
+        case 'Home':
+          seek(0);
+          break;
+      }
+    });
+
+    $('filter').addEventListener('input', event => {
+      state.filter = event.target.value;
+      renderTrackList();
+    });
+
+    $('trackList').addEventListener('click', event => {
+      const button = event.target.closest('.track');
+      if (button) void loadTrack(button.dataset.filename);
+    });
+
+    // A #track link followed while the editor is open is a same-document
+    // navigation — no reload, so boot() never sees it. Follow it here.
+    window.addEventListener('hashchange', () => {
+      const filename = decodeURIComponent(location.hash.slice(1));
+      if (filename && filename !== state.current?.filename && state.tracks.some(t => t.filename === filename)) {
+        void loadTrack(filename);
+      }
+    });
+
+    $('exportBtn').addEventListener('click', exportScenes);
+
+    $('siteUrl').value = siteUrl();
+    $('siteUrl').addEventListener('change', event => {
+      writeStorage(SITE_STORAGE, event.target.value.trim() || null);
+      $('siteUrl').value = siteUrl();
+      updatePreview();
+    });
+
+    $('previewOn').checked = readStorage(PREVIEW_STORAGE) !== 'off';
+    $('previewOn').addEventListener('change', event => {
+      writeStorage(PREVIEW_STORAGE, event.target.checked ? 'on' : 'off');
+      updatePreview();
+    });
+
+    new ResizeObserver(fitStage).observe($('stage'));
+    window.addEventListener('resize', () => {
+      invalidateWaveform();
+      redraw();
+    });
+
+    // ========================================================================
+    // Auth + boot
+    // ========================================================================
+    function showAuth(message = '') {
+      $('app').hidden = true;
+      $('auth').hidden = false;
+      $('authError').textContent = message;
+      $('authKey').focus();
+    }
+
+    $('auth').addEventListener('submit', event => {
+      event.preventDefault();
+      state.apiKey = $('authKey').value.trim();
+      writeStorage(KEY_STORAGE, state.apiKey);
+      void boot();
+    });
+
+    async function boot() {
+      if (!state.apiKey) {
+        showAuth();
+        return;
+      }
+
+      try {
+        const [tracksResponse, clipsResponse] = await Promise.all([fetch('/api/tracks'), api('/admin/clips')]);
+        if (!tracksResponse.ok || !clipsResponse.ok) throw new Error('could not load tracks or scenes');
+        const { tracks } = await tracksResponse.json();
+        const { clips } = await clipsResponse.json();
+        state.tracks = tracks.map(track => ({ ...track, filename: filenameOf(track) }));
+        state.clips = clips;
+      } catch (error) {
+        if (error.message !== 'Unauthorized') showAuth(`Failed to load: ${error.message}`);
+        return;
+      }
+
+      $('auth').hidden = true;
+      $('app').hidden = false;
+      renderTrackList();
+      fitStage();
+
+      // Reopen the track in the URL hash, so a reload lands back where you were.
+      const fromHash = decodeURIComponent(location.hash.slice(1));
+      if (fromHash && state.tracks.some(track => track.filename === fromHash)) {
+        void loadTrack(fromHash);
+      }
+    }
+
+    void boot();
+  </script>
+</body>
+</html>

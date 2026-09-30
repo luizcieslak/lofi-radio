@@ -140,8 +140,9 @@ Tracks can include links to external streaming platforms, enabling features like
 Cover artwork is served via CDN URLs for optimal performance. The frontend can display album art using the `albumArtUrl` field.
 
 **Per-track theme.**
-`theme` lets a track ask the player to render light or dark — set per track so the look
-can suit its cover art while recording promo videos. It is a closed union validated at
+`theme` lets a track ask the player to render light or dark, so the look can suit its
+cover art. It is the default for the track's promo-video scenes, each of which can
+override it (see *Scenes* below). It is a closed union validated at
 the route (`isTrackTheme` in [src/types.ts](src/types.ts)), not free text, because the
 player branches on the value; `null` in a PATCH clears it, and an unrecognized value is
 a 400. Unlike `Clip`, it IS on the public `Track` and served by `/api/tracks` and
@@ -165,50 +166,48 @@ REST API and web server with endpoints:
 - `GET /api/playlist/events` - Playlist SSE updates
 - `GET /` - Web player UI
 
-**DJ controls (campaign branch only — `campaign/dj-controls`, requires `X-API-Key`):**
-- `POST /admin/dj/play` — `{ filename, startMs? }` jump the station to a track, optionally at an offset
-- `POST /admin/dj/seek` — `{ positionMs }` seek within the current track
-- `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's clip markers (wholesale)
-- `GET /admin/clips` — all clip markers keyed by filename (JSON export + UI badges)
+**Scene editor (campaign branch only — `campaign/dj-controls`, requires `X-API-Key`):**
+- `GET /editor.html` — the scene editor ([public/editor.html](public/editor.html))
+- `GET /admin/songs/:filename/audio` — the raw source MP3, for the editor to decode
+- `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's scenes (wholesale)
+- `GET /admin/clips` — all scenes keyed by filename (JSON export + pool badges)
 
-**Video theme.** The DJ tab's *Video theme* row sets the playing track's `theme`
-(light / dark / Auto-to-clear) via the metadata PATCH above. The click is optimistic and
-rolls back if the write fails; polls are suppressed for the in-flight track only
-(`djThemeWriteFor`) so a 5s refresh can't clobber an unconfirmed click, while an
-out-of-band change still gets adopted on the next poll. Consumed by the `cieslak-dev`
-player, which toggles the `dark` class on `<html>` **on change only** — so the site's own
-theme toggle keeps working and a manual click stands until the next track wants
-something different.
+**Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`) is a slice of a
+song to turn into a ~1min promo video, plus the light/dark look of the page while it is
+filmed. They are marked in the editor, which **plays source files locally**: it fetches
+the MP3 once, decodes it with Web Audio and plays from memory, so the playhead is
+sample-exact and seeks are instant. It never uses `/stream`. An earlier version
+auditioned through the live broadcast (DJ seek/jump routes), which put the engine's
+real-time pacing and the browser's stream buffer between a click and the sound, so
+marks landed seconds off. That machinery is gone.
 
-**Clip markers.** For picking the ~1min slice of each song to feature, the DJ tab
-marks in/out points (multiple per track) — either from the live playhead via
-Mark In/Out, or typed by hand (`m:ss`, `m:ss.f`, `h:mm:ss`, or raw ms; parsed by
-`parseTimestamp`, which is duplicated in the browser and kept honest by a
-parity check) — replays any marked clip, and exports everything as JSON. Clips live in `tracks-meta.json` keyed by **filename** — not by
-track id, which `rescan()` renumbers — so they survive restarts and reordering, and
-are dropped with the track on delete. `Clip` is deliberately absent from the public
-`Track` type: it is authoring data that `/api/tracks` and the `cieslak-dev` player
-have no use for. Validation lives in a pure, unit-tested
-[src/clipValidation.ts](src/clipValidation.ts) rather than inline in the route.
+- **Why decode, not `<audio src>`:** browsers seek VBR MP3 through a coarse Xing TOC.
+  The decoded timeline matches ffmpeg's (what the recorder cuts) sample for sample.
+- **Theme resolution:** `clip.theme ?? track.theme`, else the page default. The
+  per-track `theme` (below) is the default for its scenes.
+- **Storage:** scenes live in `tracks-meta.json` keyed by **filename** — not by track
+  id, which `rescan()` renumbers — so they survive restarts and reordering, and are
+  dropped with the track on delete.
+- **Not public:** `Clip` is deliberately absent from the public `Track` type. It is
+  authoring data that `/api/tracks` and the player have no use for.
+- **Validation** lives in a pure, unit-tested
+  [src/clipValidation.ts](src/clipValidation.ts), including `parseTimestamp`. The
+  editor carries a browser copy of that function; keep the two in sync.
 
-**Batch rendering.** [scripts/recordClips.ts](scripts/recordClips.ts) turns every marked
-clip into a 1080x1920 MP4 unattended: play at the mark, capture the `cieslak-dev` page
-with Playwright, cut the audio from the source MP3, mux. Audio never comes from the
-capture — Playwright records none, and a capture would carry burst latency, the seek
-artifact, and a second generational loss. Two non-obvious capture details are handled
-there and explained in [docs/video-recording.md](docs/video-recording.md): Playwright
-starts recording at `newContext()` rather than first paint (so the pre-paint lead-in is
-*measured* per render, not hardcoded — it varied 4.4s → 5.08s across runs of the same
-page), and `<astro-dev-toolbar>` sits in frame because it lives outside the page root
-where `?stage` cannot reach it. The script refuses any `RADIO_URL` that is not
-localhost, since every render puts a track on the air. Output goes to `recordings/`
+**Batch rendering.** [scripts/recordClips.ts](scripts/recordClips.ts) turns every scene
+into a 1080x1920 MP4 unattended. For each scene it:
+
+1. Opens the `cieslak-dev` radio page **pinned** to the scene's track and theme
+   (`?stage&track=<file>&theme=<t>`; the site then ignores the live station entirely).
+2. Waits for the artwork and the expected `#radio-title`.
+3. Captures with Chromium's screencast.
+4. Cuts the audio from the source MP3 and muxes.
+
+Audio never comes from the capture: Playwright records none, and a capture would add a
+second generational loss. The script doesn't touch the broadcast. Details, including
+the capture flakes it guards against, are in
+[docs/video-recording.md](docs/video-recording.md). Output goes to `recordings/`
 (gitignored).
-
-> ⚠️ These drive the **single global broadcast**: a jump or seek changes what every
-> listener hears. They exist to audition ~1min clips for promo videos on a local
-> instance. That branch also drops `BURST_LIMIT_BYTES` from 128KB to 8KB (~4.5s →
-> ~0.3s of click-to-audio delay) so the audio tracks the scrub bar. **Restore the
-> 128KB burst and drop these routes before anything ships to real listeners.**
 
 **Admin (requires `X-API-Key` header):**
 - `POST /admin/upload` - Upload single MP3 (auto-normalized to 44100 Hz / stereo and -14 LUFS loudness if needed)
@@ -259,10 +258,11 @@ lofi-radio/
 │       ├── state.json      # Playlist order & position
 │       └── tracks-meta.json # Track metadata
 ├── public/
-│   └── index.html          # Web player UI (player + admin panel)
+│   ├── index.html          # Web player UI (player + admin panel)
+│   └── editor.html         # Scene editor for promo videos (campaign branch)
 ├── scripts/
 │   ├── generatePlaylist.ts # Utility to generate playlist from files
-│   ├── recordClips.ts      # Batch promo-video renderer (campaign branch; local-only)
+│   ├── recordClips.ts      # Batch promo-video renderer (campaign branch)
 │   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
 ├── docs/                   # Project notes / design docs
 │   ├── video-recording.md  # Promo-video workflow (campaign branch)

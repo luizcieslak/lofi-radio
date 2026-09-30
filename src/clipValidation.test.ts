@@ -92,6 +92,14 @@ describe('validateClips — accepts', () => {
 		expect(emptyLabel.ok && 'label' in (emptyLabel.clips[0] ?? {})).toBe(false)
 	})
 
+	test('a scene theme, and omits the key when absent so the track theme applies', () => {
+		const dark = validateClips([{ startMs: 0, endMs: 10, theme: 'dark' }], sequentialIds())
+		expect(dark.ok && dark.clips[0]).toEqual({ id: 'id-1', startMs: 0, endMs: 10, theme: 'dark' })
+
+		const inherit = validateClips([{ startMs: 0, endMs: 10 }], sequentialIds())
+		expect(inherit.ok && 'theme' in (inherit.clips[0] ?? {})).toBe(false)
+	})
+
 	test('startMs of exactly 0', () => {
 		expect(validateClips([{ startMs: 0, endMs: 1 }], sequentialIds()).ok).toBe(true)
 	})
@@ -152,6 +160,13 @@ describe('validateClips — rejects', () => {
 	test('a non-string label, or one past the cap', () => {
 		expectError([{ startMs: 0, endMs: 10, label: 42 }], 'label must be a string')
 		expectError([{ startMs: 0, endMs: 10, label: 'x'.repeat(MAX_LABEL_LENGTH + 1) }], 'exceeds')
+	})
+
+	test('a theme outside the closed union', () => {
+		expectError([{ startMs: 0, endMs: 10, theme: 'sepia' }], 'theme must be one of')
+		expectError([{ startMs: 0, endMs: 10, theme: 'Dark' }], 'theme must be one of')
+		// null is not "clear" here: the whole list is replaced, so omit the key instead.
+		expectError([{ startMs: 0, endMs: 10, theme: null }], 'theme must be one of')
 	})
 
 	test('a non-string id', () => {

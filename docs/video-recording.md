@@ -1,18 +1,17 @@
 # Recording Promo Videos
 
 Workflow for producing the ~1 minute vertical clips posted to Instagram / TikTok /
-YouTube Shorts: pick the part of a song worth featuring, style the page to match it,
-record the player, and cut the audio.
+YouTube Shorts: pick the part of a song worth featuring, choose the look of the page
+for it, and render.
 
 The video is visually static — the [cieslak.dev](https://cieslak.dev) radio page with
-its cover art and title — so the whole job is choosing **which 60 seconds** of a track
-to use and **which look** suits it.
+its cover art and title — so the whole job is choosing **which seconds** of a track
+to use and **which theme** suits it. Each such choice is a **scene**: a start, an end,
+and a light/dark theme.
 
-> ⚠️ **This workflow runs on the `campaign/dj-controls` branch, locally only.**
-> The DJ controls drive the **single global broadcast**: selecting a track or seeking
-> changes what every connected listener hears. Never run this branch against a server
-> real listeners are on. See [the branch caveats](#branch-caveats) before shipping
-> anything.
+> This workflow lives on the `campaign/dj-controls` branch and is meant for local use.
+> Nothing in it touches the live broadcast: the editor plays source files in the
+> browser, and the recorder pins the page to a track through its URL.
 
 ---
 
@@ -20,297 +19,194 @@ to use and **which look** suits it.
 
 | Thing | Why |
 | --- | --- |
-| `lofi-radio` on `campaign/dj-controls`, running locally | Provides the DJ tab, clip markers, and per-track theme |
-| `RADIO_API_KEY` in `.env` | All DJ + metadata routes are admin-gated |
-| `cieslak-dev` running locally, pointed at this server | The page you actually film |
-| `ffmpeg` | Cutting the audio slice |
-| A screen recorder | OBS, or the browser's own capture |
-
-Start both servers:
+| `lofi-radio` on `campaign/dj-controls`, running | Serves the scene editor, the source MP3s, and stores scenes |
+| `RADIO_API_KEY` in `.env` | Scene routes and the audio route are admin-gated |
+| `cieslak-dev` on `video-recording`, running | The page that gets filmed (needs pinned-track mode) |
+| `ffmpeg` / `ffprobe` | Cutting and muxing the audio |
+| Playwright with a full Chromium | Capturing the page (`npx playwright install chromium`) |
 
 ```bash
 # terminal 1 — the radio
 cd lofi-radio
 bun run dev                    # :5634
 
-# terminal 2 — the site you film
+# terminal 2 — the site that gets filmed
 cd cieslak-dev
 PUBLIC_RADIO_API_URL=http://localhost:5634 npx astro dev   # :4321
 ```
 
-Then open <http://localhost:4321/en/radio/> for the page to film, and
-<http://localhost:5634/> → 🔐 → **🎛️ DJ** for the controls.
+Then open <http://localhost:5634/editor.html> (or 🔐 → **🎬 Scenes** on the player).
 
 ---
 
-## 1. Find the slice
+## 1. Mark scenes in the editor
 
-In the DJ tab, click any track to put it on the air, then use the scrub bar, the
-±5s/±10s nudges, and the timecode readout to hunt for the part you want.
+Pick a track from the pool on the left. The editor downloads the source MP3 once,
+decodes it in the browser, and plays it from memory:
 
-Mark the in- and out-points two ways:
+- **Whole-track waveform:** click to seek, drag to select a range. Existing scenes are
+  tinted by their theme.
+- **Detail strip:** ±5s around the playhead, for landing a mark on a beat. Click to
+  seek within it.
+- **Transport:** <kbd>Space</kbd> play/pause, <kbd>←</kbd>/<kbd>→</kbd> ±1s
+  (<kbd>Shift</kbd> ±5s), <kbd>,</kbd>/<kbd>.</kbd> ±0.1s.
+- **Marking:** <kbd>I</kbd> / <kbd>O</kbd> set in/out at the playhead, and
+  <kbd>Enter</kbd> adds the range as a scene.
 
-- **By ear** — **⌖ Mark In** at the start, **⌖ Mark Out** at the end. Both read the
-  live playhead.
-- **By hand** — type into the two inputs and press **+ Add**. Accepts `m:ss`,
-  `m:ss.f`, `h:mm:ss`, or raw milliseconds (a bare number is ms, matching the export
-  format, so you can paste values straight back in).
+Each scene row has:
 
-Each clip row has a **▶** button that replays exactly that slice, so you can audition a
-mark before committing to it. A clip that ends after the track does gets a **⚠** badge
-— ffmpeg would produce a short or empty cut, so fix those before exporting.
+- **Start / end fields.** Type `m:ss`, `m:ss.mmm`, `h:mm:ss`, or raw milliseconds (a
+  bare number is ms, matching the export). Or use ⤒ / ⤓ to snap either end to the
+  playhead.
+- **Light / Dark** — the look of the page for this scene.
+- **▶ (or <kbd>P</kbd>)** plays the scene exactly as it will render: from start to
+  end, with the 2s fade-out inside the end.
+- **⚠** when a scene runs past the end of the track. The render would come out short,
+  so fix those.
 
-Clips are stored per track in `songs/.radio-state/tracks-meta.json`, keyed by
-**filename** (not track id, which `rescan()` renumbers), so they survive restarts and
-playlist reordering. Multiple clips per track are fine — mark a few candidates and pick
-later.
+Every edit saves immediately. The right-hand panel shows the actual site page, pinned
+to the selected scene's track and theme, at the capture's 1080×1920 scaled down, so the
+preview is what gets filmed.
 
-## 2. Choose the look
+### Why local playback
 
-Each track carries a **video theme**: `light`, `dark`, or unset.
+The first version of this workflow auditioned clips by driving the live broadcast.
+Every seek went through the stream engine's real-time frame pacing and then the
+browser's stream buffer, so the audio started seconds after the click while the
+server-side counter kept running. Marks landed seconds off.
 
-Set it from the **Video theme** row in the DJ tab. The choice is saved on the track and
-pushed to every connected player over SSE, so the `cieslak-dev` page restyles
-immediately — no reload. Pick whichever suits the cover art; **Auto** clears the field
-and leaves the visitor's own theme preference alone.
+The editor instead decodes the whole file with Web Audio. The playhead comes from the
+audio clock, corrected by `getOutputTimestamp()` for output latency (which matters on
+Bluetooth). Seeks restart playback from memory, so they're instant.
 
-The theme is stored alongside the clips and exposed on `/api/tracks` and
-`/now-playing`, so it is set once per track and then applies every time you record it.
+It decodes rather than using `<audio src>` because the library is VBR. Browsers seek
+VBR MP3 through a coarse 100-entry Xing table, so an `<audio>` element's
+`currentTime` after a seek can be off by hundreds of ms.
+
+The decoded timeline is **sample-identical to ffmpeg's**, which is what the recorder
+cuts with. On `Novel.mp3`, both decode to 9,754,608 samples and put the same peak at
+the same sample.
+
+### Themes: scene over track
+
+A scene's look resolves as `scene.theme ?? track.theme`. If neither is set, the page
+keeps its own default.
+
+- New scenes are created with an explicit theme (the track's, else light).
+- Older scenes without one *inherit* the track's. The editor shows that as an outlined
+  toggle, and clicking it pins the value on the scene.
+- A track's own `theme` is still editable through the metadata PATCH, and it serves as
+  the default for its scenes:
 
 ```bash
-# or set it from the shell
 curl -X PATCH "localhost:5634/admin/tracks/Novel.mp3/metadata" \
   -H "X-API-Key: $RADIO_API_KEY" -H 'Content-Type: application/json' \
   -d '{"theme":"dark"}'
 ```
 
-> The player applies a track's theme **on change only**, so the site's own theme toggle
-> still works — a manual click stands until the next track asks for something
-> different.
+Scenes are stored per track in `songs/.radio-state/tracks-meta.json` (as `clips`),
+keyed by **filename** rather than track id, since `rescan()` renumbers ids. That keeps
+them across restarts and playlist reordering.
 
-## 3. Record
-
-1. Put the track on the air at the clip's start: the clip row's **▶**, or
-   `POST /admin/dj/play` with `{ filename, startMs }`.
-2. Frame the `cieslak-dev` page (`/en/radio/`) in the recorder, vertically for Shorts.
-3. Press play in the page and capture for the clip's length.
-
-Record a couple of seconds of handle on each end — trimming is easier than re-recording.
-
-### Audio: capture or cut?
-
-Screen-recorded audio is fine for a first pass, but for anything you'll actually post,
-cut the slice from the source MP3 and mux it in. It avoids the burst-buffer latency,
-the recorder's resampling, and any decode artifact:
+## 2. Render
 
 ```bash
-# exact slice, no re-encode
-ffmpeg -ss 78.551 -to 138.551 -i "songs/Novel.mp3" -c copy clip-audio.mp3
-
-# then replace the recording's audio
-ffmpeg -i screen-capture.mp4 -i clip-audio.mp3 \
-  -map 0:v -map 1:a -c:v copy -shortest clip-final.mp4
+bun run scripts/recordClips.ts                       # every scene
+bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's scenes
+bun run scripts/recordClips.ts --clip a1b2c3         # one scene
+bun run scripts/recordClips.ts --dry-run             # plan only (shows each theme)
 ```
 
-`-ss`/`-to` take seconds; the exported clip markers are in **milliseconds**, so divide
-by 1000.
+For each scene the script:
 
-> **Seek artifact.** MP3's bit reservoir means a frame can depend on ~511 bytes of the
-> preceding one, so a seek can leave a ~50ms decode artifact at the very start. Cutting
-> the audio from the source file (above) avoids it entirely. If you do use captured
-> audio, start recording a beat before the mark.
+1. Opens the site's radio page **pinned** to the scene's track and theme.
+2. Waits for the artwork **and** for `#radio-title` to show that track's title.
+3. Captures it for the scene's length with Chromium's screencast.
+4. Cuts the audio from `songs/<file>` with ffmpeg and muxes the two, with a 2s
+   fade-out on both streams.
 
-### Automating the capture with Playwright
+Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-1080x1920.mp4`.
 
-Since the page is visually static, the screen capture is a good candidate for
-automation — repeatable, headless, and exactly as long as you ask for, which removes
-the fiddliest part of doing it by hand (hitting the timing).
+Captures run in real time, so a 60s scene takes at least 60s plus setup and encode. A
+failed scene is reported and the batch continues. Each multi-scene batch renders every
+scene in a fresh child process, because back-to-back captures in one Playwright client
+wedge on the third.
 
-**Playwright records video but NOT audio.** Its
-[`recordVideo`](https://playwright.dev/docs/videos) option takes only `dir`, `size`, and
-`showActions` — there is no audio option, and the output has no audio track. Two
-independent reasons, worth keeping straight:
-
-1. The recorder captures frames only.
-2. Chromium is launched with `--mute-audio` among Playwright's default args, so the
-   browser is silent regardless. (Removable via
-   `ignoreDefaultArgs: ['--mute-audio']` — which un-mutes the browser but still gets
-   you no audio in the file.)
-
-This is fine, because **the audio should come from the source MP3 anyway** — see the
-section above. Captured audio would carry the burst-buffer latency, any seek artifact,
-and a second generational loss on already-lossy MP3. So the split is not a workaround:
+### Pinned-track mode (cieslak-dev)
 
 ```
-Playwright  → silent video, exact duration, vertical framing
-ffmpeg -ss  → frame-exact lossless audio slice from songs/*.mp3
-ffmpeg mux  → the clip
+/en/radio/?stage&drift=12&driftSpeed=3&track=Novel.mp3&theme=dark
 ```
 
-Sketch:
+- `track=`: `radio-player.ts` fetches `/api/tracks` once and shows that file. It opens
+  neither `/stream` nor the now-playing SSE feed, and its play button is inert. What
+  is in frame therefore can't depend on the station, and a render never changes what
+  listeners hear. An unknown filename renders nothing and logs an error, so the
+  recorder's artwork wait fails loudly instead of filming another track.
+- `theme=`: applied before first paint by `BaseLayout`, and it overrides the track's
+  own theme. It is written to `localStorage` on the site's origin, so it persists
+  there; flip it back with the site's toggle.
+- `stage`: hides nav, footer, miniplayer and the play button.
+- `drift` / `driftSpeed`: slowly animate the glow.
 
-```js
-const context = await browser.newContext({
-  viewport: { width: 1080, height: 1920 },       // vertical for Shorts/Reels
-  recordVideo: { dir: 'out/', size: { width: 1080, height: 1920 } },
-})
-```
+### Why the audio is cut, not captured
 
-Set `size` explicitly: video defaults to the viewport scaled into 800x800, or **800x450
-if no viewport is set** — landscape, i.e. the wrong shape for vertical video.
+Playwright records no audio (the recorder captures frames only, and Chromium runs with
+`--mute-audio`). It doesn't matter, because the audio should come from the source file
+anyway: a capture would add resampling and a second generational loss on
+already-lossy MP3. The server streams `songs/*.mp3` with no transformation, so a local
+cut matches what listeners hear.
 
-Three things bite on a real capture, all of them handled by
-[scripts/recordClips.ts](../scripts/recordClips.ts):
-
-1. **Recording starts at `newContext()`, not at first paint.** Every capture opens
-   with several seconds of empty background and an unloaded cover box. The lead-in
-   is *not* constant — two runs of the same page measured 4.4s and 5.08s, since it
-   moves with image fetches and dev-server warmth. So record with a handle, then
-   derive the trim from the finished file's own duration rather than a fixed `-ss`:
-
-   ```
-   leadIn = rawDuration - (clipLength + handle)
-   ```
-
-   Wait on the artwork specifically (`img.complete && img.naturalWidth > 0`), not
-   just `networkidle` — the cover *is* the shot.
-
-2. **The Astro dev toolbar is in frame.** `?stage` hides nav, footer, miniplayer and
-   the play button, but `<astro-dev-toolbar>` is injected by the dev server as a
-   sibling of the page root, so page CSS cannot reach it. It renders as a dark pill
-   at the bottom edge of a 1080x1920 capture. Hide it from the harness:
-
-   ```js
-   await context.addInitScript(() => {
-     const style = document.createElement('style')
-     style.textContent = 'astro-dev-toolbar{display:none !important}'
-     document.head.appendChild(style)
-   })
-   ```
-
-3. **Video recording needs a full Chromium.** `chromium_headless_shell` — what a bare
-   `playwright install` may leave you with — cannot record, and fails only at launch.
-
-> **Theme is applied on change.** The player toggles the theme when it *changes*, so
-> setting a track's theme before the page connects leaves the page on its default.
-> When scripting, either set the theme after the page is up, or accept the default.
-
-> **Do the local MP3s match what the server streams?** Yes — the server streams the
-> files in `songs/` frame-by-frame with no transformation at serve time, so a local cut
-> is sample-identical to what a listener hears. The real drift risk is that a *local*
-> `songs/` differs from *production's*, since uploads are normalized on the way in
-> (44.1kHz stereo, -14 LUFS — see [src/audioNormalizer.ts](../src/audioNormalizer.ts)).
-> Spot-check before cutting:
->
-> ```bash
-> ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 "songs/Novel.mp3"
-> ```
->
-> If a track does differ, pull that file from the server rather than re-encoding the
-> local copy to match — another re-encode is another generational loss.
-
-### Batch rendering
-
-Once the marks are in, [scripts/recordClips.ts](../scripts/recordClips.ts) renders them
-all unattended — play at the mark, capture, cut the audio from the source MP3, mux:
+The real drift risk is a *local* `songs/` that differs from *production's*, since
+uploads are normalized on the way in (44.1 kHz stereo, -14 LUFS — see
+[src/audioNormalizer.ts](../src/audioNormalizer.ts)). Spot-check with:
 
 ```bash
-bun run scripts/recordClips.ts                       # every marked clip
-bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's clips
-bun run scripts/recordClips.ts --clip a1b2c3         # one clip
-bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
+ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 "songs/Novel.mp3"
 ```
 
-Output lands in `recordings/` (gitignored) as
-`<track-slug>-<clip-id>-1080x1920.mp4`. Start with `--dry-run` to see the plan.
+If a track differs, pull the file from the server rather than re-encoding the local
+copy.
 
-Captures happen in real time — a 60s clip takes at least 60s, plus handle and encode —
-so a large batch is genuinely long. A failed clip is reported and the batch continues,
-rather than abandoning the rest.
+### Capture details the script handles
 
-Every clip ends with a **2s fade-out on both video and audio** (`FADE_SECONDS`). The
-fade runs *inside* the marked slice — it starts 2s before `endMs` — so the clip still
-ends exactly where it was marked rather than running past it. On a clip shorter than
-4s the fade shrinks to half the clip, since a 2s fade on a 1.5s clip would start before
-the clip begins.
+- **Frames come from CDP's screencast, not `recordVideo`.** `recordVideo` deadlocks on
+  the second capture in a process. The screencast's variable-rate frames are resampled
+  onto a fixed 30fps timeline, so the output is exactly the scene's length by
+  construction.
+- **The Astro dev toolbar is in frame** otherwise. It is injected outside the page root
+  where `?stage` can't reach, so the harness hides it with an init script.
+- **Video needs a full Chromium.** `chromium_headless_shell` fails only at launch; the
+  preflight checks for the right build without launching one.
+- **Everything is bounded:** launch, capture (real time plus slack), the encoder exit,
+  and every ffmpeg call. A wedged process fails its scene instead of stalling the
+  batch.
+- **Every render is verified:** duration within 0.5s, and audible audio (a
+  `volumedetect` mean above -80 dB).
 
-Each render is verified before being accepted: the output must come out at the expected
-duration, contain audible audio, and the station must still be on the clip's own track.
-The most common failure is a clip marked past the end of its track, which yields a short
-audio slice — the same case the DJ tab flags with **⚠**.
+Known flake: an encode can finish a valid MP4 and never report exit. The timeout is
+then treated as inconclusive, and verification decides.
 
-**Two known flakes, both intermittent and neither tied to a particular clip** (the same
-clip renders fine on a retry), so neither can be fixed by correcting inputs:
+## 3. Export
 
-1. **Playwright's video encoder deadlocks.** `context.close()` never returns; its ffmpeg
-   child sits blocked on `pipe:0` with a 0-byte `.webm`. This one genuinely loses the
-   capture. Bounded by `CLOSE_TIMEOUT_MS` (60s): the clip fails, the browser is torn
-   down to kill the stuck encoder, and the batch continues. **Just re-run that clip.**
-2. **The encode finishes but never reports exit.** ffmpeg writes a complete, valid MP4
-   and then lingers as a zombie, so `close` never fires. Here the output is *fine*, so
-   a timeout is treated as inconclusive rather than fatal — the run falls through to
-   verification, which is what actually decides. Failing on it would throw away good
-   work.
-
-Outside the script, a wedged process ignores SIGTERM and needs `kill -9`.
-
-Every subprocess is bounded (`SUBPROCESS_TIMEOUT_MS`), because `close` fires only after
-the child exits *and* its stdio drains — so an un-reaped child otherwise stalls the
-batch forever.
-
-Because the video shows whatever the *page* is playing while the audio is cut from the
-clip's own MP3, a render that runs long can silently capture the **wrong track** — right
-audio, wrong cover art. The script re-checks `/now-playing` after each capture and fails
-the clip if the station moved.
-
-Before recording anything, the script preflights the environment: `ffmpeg`/`ffprobe` on
-PATH, the site reachable, and Playwright resolving to a **full Chromium** rather than
-`chromium_headless_shell` (which cannot record and fails only at launch).
-
-> The script refuses to run against anything but `localhost`, because every render puts
-> a track on the air. See [the branch caveats](#branch-caveats).
-
-## 4. Export the marks
+**⬇ Export** in the editor downloads every scene as JSON, or:
 
 ```bash
 curl -s localhost:5634/admin/clips -H "X-API-Key: $RADIO_API_KEY"
 ```
 
-Or **⬇ Export JSON** in the DJ tab. Shape — keyed by filename, timestamps in ms:
-
 ```json
 {
   "clips": {
     "Novel.mp3": [
-      { "id": "a1b2c3", "startMs": 78551, "endMs": 138551, "label": "intro pad" }
+      { "id": "a1b2c3", "startMs": 78551, "endMs": 138551, "theme": "dark", "label": "intro pad" }
     ]
   }
 }
 ```
 
-Keep a copy outside `songs/` if it matters to you: `songs/` is gitignored, so the marks
-are not in version control.
-
----
-
-## Branch caveats
-
-`campaign/dj-controls` makes two changes that **must not reach real listeners**:
-
-1. **`BURST_LIMIT_BYTES` is 8 KB instead of 128 KB**
-   ([src/streamEngine.ts](../src/streamEngine.ts)). The burst-on-connect buffer is what
-   keeps a new listener from underrunning at the live edge; at 232 kbps, 128 KB is
-   ~4.5s of cushion. That cushion is also click-to-audio latency, which makes the scrub
-   bar feel disconnected from the audio while auditioning — so this branch drops it to
-   ~0.3s. Restore it before shipping.
-
-2. **The DJ routes exist at all** — `POST /admin/dj/play`, `POST /admin/dj/seek`,
-   `PUT /admin/tracks/:filename/clips`, `GET /admin/clips`. Admin-gated, but they
-   reach into the live broadcast by design.
-
-Clip markers and the per-track theme are harmless on their own: clips are inert
-authoring data, and `theme` is just another metadata field. Only the burst change and
-the DJ routes are branch-local.
+`songs/` is gitignored, so scenes are not in version control. Keep an export if they
+matter.
 
 ---
 
@@ -318,11 +214,12 @@ the DJ routes are branch-local.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /admin/dj/play` | `{ filename, startMs? }` — put a track on the air, optionally at an offset |
-| `POST /admin/dj/seek` | `{ positionMs }` — seek within the current track |
-| `PUT /admin/tracks/:filename/clips` | `{ clips: Clip[] }` — replace a track's marks |
-| `GET /admin/clips` | Every mark, keyed by filename |
-| `PATCH /admin/tracks/:filename/metadata` | `{ theme: "light" \| "dark" \| null }` among other fields |
-| `GET /now-playing` | Current track (incl. `theme`) + live `positionMs` / `durationMs` |
+| `GET /editor.html` | The scene editor |
+| `GET /admin/songs/:filename/audio` | The source MP3, for the editor to decode |
+| `PUT /admin/tracks/:filename/clips` | `{ clips: Clip[] }`: replace a track's scenes wholesale |
+| `GET /admin/clips` | Every scene, keyed by filename |
+| `PATCH /admin/tracks/:filename/metadata` | `{ theme: "light" \| "dark" \| null }` — the track-level default, among other fields |
+| `GET /api/tracks` | Public playlist; what pinned mode and the recorder read titles/themes from |
 
-All admin routes require `X-API-Key`.
+All `/admin` routes require `X-API-Key`. A `Clip` is `{ id, startMs, endMs, label?,
+theme? }`, validated in [src/clipValidation.ts](../src/clipValidation.ts).

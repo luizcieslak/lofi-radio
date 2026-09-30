@@ -146,13 +146,7 @@ app.get('/stream', (req: Request, res: Response) => {
  */
 app.get('/now-playing', (req: Request, res: Response) => {
 	const nowPlaying = engine.getNowPlaying()
-	if (!nowPlaying) {
-		res.json({ track: null })
-		return
-	}
-	// Playback position rides along so the DJ scrub bar has a source of truth
-	// without polling a second endpoint.
-	res.json({ ...nowPlaying, ...engine.getPlayback() })
+	res.json(nowPlaying || { track: null })
 })
 
 /**
@@ -530,78 +524,39 @@ app.get('/admin/backup', requireAuth, (req: Request, res: Response) => {
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DJ CONTROLS (campaign branch)
+// SCENE EDITOR (campaign branch)
 //
-// These drive the SINGLE GLOBAL BROADCAST: a jump or seek changes what every
-// listener hears, not just the caller. That is intentional for auditioning clips
-// locally, and is why both routes are admin-gated. Do not deploy this branch to a
-// public instance without revisiting that trade-off.
+// Backs public/editor.html, where promo-video scenes are marked. Nothing here
+// touches the broadcast: the editor plays the source file locally in the browser,
+// so its playhead is exact instead of trailing the live stream by its buffer.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Jump the station to a specific track, optionally starting at an offset.
- * POST /admin/dj/play
- * Body: { filename: string, startMs?: number }
+ * The raw source MP3, for the editor to decode and play locally.
+ * GET /admin/songs/:filename/audio
+ *
+ * Admin-gated because the editor fetches it with the X-API-Key header and
+ * decodes it with Web Audio; it is never an <audio src>, so no query-string key.
  */
-app.post('/admin/dj/play', requireAuth, (req: Request, res: Response) => {
-	const { filename, startMs } = req.body ?? {}
-
-	if (typeof filename !== 'string' || filename.length === 0) {
-		res.status(400).json({ error: 'filename (string) is required' })
+app.get('/admin/songs/:filename/audio', requireAuth, (req: Request, res: Response) => {
+	const filename = req.params.filename
+	if (!filename) {
+		res.status(400).json({ error: 'Filename required' })
 		return
 	}
 
-	// Path traversal guard, matching the other admin routes.
 	const filepath = path.join(SONGS_DIR, filename)
 	if (!filepath.startsWith(SONGS_DIR)) {
 		res.status(400).json({ error: 'Invalid filename' })
 		return
 	}
 
-	// No upper bound: seekToMs clamps at EOF, so the route needs no duration lookup.
-	let startAtMs = 0
-	if (startMs !== undefined) {
-		if (typeof startMs !== 'number' || !Number.isFinite(startMs) || startMs < 0) {
-			res.status(400).json({ error: 'startMs must be a finite number >= 0' })
-			return
-		}
-		startAtMs = startMs
-	}
-
-	// Move the playlist cursor first, then tell the engine — so that when the
-	// engine commits, the playlist hands back the track we asked for.
-	const track = playlistManager.jumpToTrack(filename)
-	if (!track) {
-		res.status(404).json({ error: 'Track not found in playlist' })
+	if (!fs.existsSync(filepath)) {
+		res.status(404).json({ error: 'Song not found' })
 		return
 	}
 
-	engine.requestPlayTrack(track, startAtMs)
-
-	res.json({ success: true, track, startMs: startAtMs })
-})
-
-/**
- * Seek within the currently playing track.
- * POST /admin/dj/seek
- * Body: { positionMs: number }
- */
-app.post('/admin/dj/seek', requireAuth, (req: Request, res: Response) => {
-	const { positionMs } = req.body ?? {}
-
-	if (typeof positionMs !== 'number' || !Number.isFinite(positionMs) || positionMs < 0) {
-		res.status(400).json({ error: 'positionMs must be a finite number >= 0' })
-		return
-	}
-
-	if (!engine.getNowPlaying()) {
-		res.status(409).json({ error: 'Nothing is currently playing' })
-		return
-	}
-
-	engine.requestSeek(positionMs)
-
-	res.json({ success: true, positionMs })
+	res.sendFile(filepath)
 })
 
 /**

@@ -3,8 +3,8 @@
  *
  * Renders every marked clip into a vertical promo video, unattended.
  *
- * For each clip: put the track on the air at the clip's start, screen-record the
- * `cieslak-dev` radio page with Playwright, cut the audio slice straight from the
+ * For each clip: open the `cieslak-dev` radio page pinned to the clip's track and
+ * theme, screen-record it with Playwright, cut the audio slice straight from the
  * source MP3, and mux the two into an H.264/AAC MP4.
  *
  * The audio never comes from the capture. Playwright records no audio at all, and
@@ -23,12 +23,14 @@
  *   bun run scripts/recordClips.ts --clip a1b2c3         # one clip
  *   bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
  *
- * Requires the radio running locally on `campaign/dj-controls` (the DJ routes are
- * branch-local), the site running on :4321, RADIO_API_KEY, ffmpeg, and Playwright
- * with a full Chromium — `chromium_headless_shell` cannot record video.
+ * Requires the radio running on `campaign/dj-controls` (for the scene data), the
+ * site running on :4321 (with pinned-track mode), RADIO_API_KEY, ffmpeg, and
+ * Playwright with a full Chromium — `chromium_headless_shell` cannot record video.
  *
- * ⚠️ Every render puts a track on the air. The DJ routes drive the SINGLE GLOBAL
- * BROADCAST, so this must only ever run against a local server. See
+ * Nothing here touches the broadcast. The page is opened with `?track=` and
+ * `?theme=`, which pin it to one track and ignore the live station, so a render
+ * never changes what listeners hear and the station can never drift into frame.
+ * Scenes are marked in the editor (public/editor.html). See
  * docs/video-recording.md.
  */
 
@@ -42,7 +44,7 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
-import type { Clip } from '../src/types'
+import { type Clip, isTrackTheme, type TrackTheme } from '../src/types'
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -105,13 +107,6 @@ const FRAME_STALL_TIMEOUT_MS = 5_000
  */
 const ENCODER_TIMEOUT_MS = 60_000
 
-/**
- * How close to the track's end a clip must be marked to count as running to the
- * end of the song. Marks are set by ear against a decoded duration, so they land
- * a little short or long; this is the slop that treats those as the same intent.
- */
-const TRACK_END_TOLERANCE_SECONDS = 1.5
-
 /** The page is visually static, but give the glow/drift a moment to settle. */
 const SETTLE_MS = 1500
 
@@ -120,9 +115,6 @@ const CONTENT_TIMEOUT_MS = 15_000
 
 /** Ceiling on the initial navigation; the page is local, so this is generous. */
 const NAVIGATION_TIMEOUT_MS = 30_000
-
-/** The radio needs a moment to actually be streaming the new position. */
-const ON_AIR_SETTLE_MS = 1200
 
 /**
  * Slack allowed for the whole in-browser phase *on top of* the capture's own real
@@ -174,6 +166,16 @@ interface RenderJob {
 	clip: Clip
 	outputPath: string
 	durationSeconds: number
+	/** What the page must show in `#radio-title`, proving it is on this track. */
+	title: string
+	/** `clip.theme ?? track.theme`; undefined leaves the page on its default. */
+	theme?: TrackTheme
+}
+
+/** The subset of the public `/api/tracks` entries this script reads. */
+interface TrackInfo {
+	title: string
+	theme?: TrackTheme
 }
 
 interface RenderResult {
@@ -344,33 +346,43 @@ async function fetchClips(): Promise<Record<string, Clip[]>> {
 	return clips
 }
 
-/** Put a track on the air at an offset. This changes what every listener hears. */
-async function playAt(filename: string, startMs: number): Promise<void> {
-	const response = await fetch(`${RADIO_URL}/admin/dj/play`, {
-		method: 'POST',
-		headers: adminHeaders(),
-		body: JSON.stringify({ filename, startMs }),
-	})
+/**
+ * Title and theme of every playlist track, keyed by filename, from the public
+ * `/api/tracks`. Narrowed field by field: it is the server's JSON, not ours.
+ */
+async function fetchTracks(): Promise<Map<string, TrackInfo>> {
+	const response = await fetch(`${RADIO_URL}/api/tracks`)
 	if (!response.ok) {
-		throw new Error(`POST /admin/dj/play (${filename} @${startMs}) -> ${response.status}`)
+		throw new Error(`GET /api/tracks -> ${response.status} ${response.statusText}`)
 	}
-}
-
-/** The `path` of whatever the station is currently broadcasting. */
-async function nowPlayingPath(): Promise<string | null> {
-	const response = await fetch(`${RADIO_URL}/now-playing`)
-	if (!response.ok) return null
 	const body: unknown = await response.json()
-	if (typeof body !== 'object' || body === null || !('track' in body)) return null
-	const { track } = body as { track: unknown }
-	if (typeof track !== 'object' || track === null || !('path' in track)) return null
-	const { path: trackPath } = track as { path: unknown }
-	return typeof trackPath === 'string' ? trackPath : null
+	const tracks = typeof body === 'object' && body !== null && 'tracks' in body ? body.tracks : null
+	if (!Array.isArray(tracks)) throw new Error('GET /api/tracks returned an unexpected shape')
+
+	const result = new Map<string, TrackInfo>()
+	for (const track of tracks) {
+		if (typeof track !== 'object' || track === null) continue
+		if (!('path' in track) || typeof track.path !== 'string') continue
+		if (!('title' in track) || typeof track.title !== 'string') continue
+		const theme = 'theme' in track && isTrackTheme(track.theme) ? track.theme : undefined
+		result.set(path.basename(track.path), { title: track.title, theme })
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------
 // Capture
 // ---------------------------------------------------------------------------
+
+/**
+ * The radio page pinned to a job's track and theme (see pinned-track mode in
+ * cieslak-dev's radio-player.ts). The scene editor's stage preview builds the
+ * same URL, so what you preview is what gets filmed.
+ */
+function stagePageUrl(job: RenderJob): string {
+	const theme = job.theme ? `&theme=${job.theme}` : ''
+	return `${SITE_URL}/en/radio/?${PAGE_FLAGS}&track=${encodeURIComponent(job.filename)}${theme}`
+}
 
 /**
  * Record the page for `seconds`, returning the path to the raw silent video.
@@ -388,7 +400,7 @@ async function nowPlayingPath(): Promise<string | null> {
  * slot, repeating it when the page is idle. That makes the output exactly
  * `seconds` long by construction rather than by trimming afterwards.
  */
-async function captureVideo(outDir: string, seconds: number): Promise<string> {
+async function captureVideo(outDir: string, seconds: number, job: RenderJob): Promise<string> {
 	// Imported lazily so `--dry-run` and `--help` work without Playwright installed.
 	const { chromium } = await import('playwright')
 
@@ -440,13 +452,12 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 			const page = await context.newPage()
 			phase = 'navigating to the page'
 			/**
-			 * `domcontentloaded`, not `networkidle`. The radio page holds an SSE
-			 * metadata stream and an audio stream open by design, so the network never
-			 * reliably goes quiet for the 500ms `networkidle` requires -- it only
-			 * passes when those happen to lull, and it timed out on two clips of a
-			 * 15-clip batch. Readiness is established below by the artwork itself.
+			 * `domcontentloaded`, not `networkidle`. Readiness is established below by
+			 * the artwork and the title themselves, which is what the shot needs;
+			 * `networkidle` timed out on two clips of a 15-clip batch back when the
+			 * page held the live streams open, and it proves nothing about either.
 			 */
-			await page.goto(`${SITE_URL}/en/radio/?${PAGE_FLAGS}`, {
+			await page.goto(stagePageUrl(job), {
 				waitUntil: 'domcontentloaded',
 				timeout: NAVIGATION_TIMEOUT_MS,
 			})
@@ -462,19 +473,23 @@ async function captureVideo(outDir: string, seconds: number): Promise<string> {
 				null,
 				{ timeout: CONTENT_TIMEOUT_MS },
 			)
+
+			/**
+			 * Prove the frame shows THIS clip's track before filming it. The audio is
+			 * cut from this clip's own MP3, so a page on any other track would be a
+			 * silent mismatch: right audio, wrong cover. Pinned mode makes that
+			 * unlikely, but a stale filename or an old site build would fall back to
+			 * the live station, and this is what catches it.
+			 */
+			phase = `waiting for the page to show "${job.title}"`
+			await page.waitForFunction(
+				expected => document.getElementById('radio-title')?.textContent?.trim() === expected,
+				job.title.trim(),
+				{ timeout: CONTENT_TIMEOUT_MS },
+			)
+
 			phase = 'waiting for the page to settle'
 			await page.waitForTimeout(SETTLE_MS)
-
-			// Start playback so the page is in its playing state. In stage mode the
-			// button is transparent rather than removed, so it still works and still
-			// stays out of frame.
-			await page.evaluate(() => {
-				const buttons = [...document.querySelectorAll('button')]
-				const playButton = buttons.find(button =>
-					/play|tocar|listen/i.test(button.getAttribute('aria-label') ?? button.textContent ?? ''),
-				)
-				playButton?.click()
-			})
 
 			// ffmpeg consumes JPEGs on stdin and encodes the final MP4 in one pass.
 			// No intermediate .webm, so there is no second generational loss and no
@@ -607,53 +622,11 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 		throw new Error(`source MP3 not found: ${sourceMp3}`)
 	}
 
-	/**
-	 * Whether this clip runs to the end of the track, in which case the station is
-	 * *expected* to advance and the drift check below must not treat it as a fault.
-	 * Compared with a tolerance because the mark and the decoded duration are not
-	 * sample-exact.
-	 *
-	 * The capture no longer records past the clip, so a clip marked to the end of
-	 * the song ("end where the music ends") needs no special handling beyond this:
-	 * screencast frames start only once the page has painted, so there is no
-	 * pre-paint head to trim and therefore no slack to record.
-	 */
-	const trackSeconds = await probeDuration(sourceMp3)
-	const runsToEnd = trackSeconds - clip.endMs / 1000 < TRACK_END_TOLERANCE_SECONDS
-
-	step(`on air @${(clip.startMs / 1000).toFixed(1)}s`)
-	await playAt(filename, clip.startMs)
-	await new Promise(resolve => setTimeout(resolve, ON_AIR_SETTLE_MS))
-
 	const captureDir = path.join(workDir, 'capture')
 	await mkdir(captureDir, { recursive: true })
 	// Capture is real time, so say how long this will actually take.
-	step(`capturing ${durationSeconds.toFixed(0)}s (real time)`)
-	const rawVideo = await captureVideo(captureDir, durationSeconds)
-
-	/**
-	 * Confirm the station never moved off this track mid-capture.
-	 *
-	 * The video shows whatever the PAGE says is playing, while the audio is cut
-	 * from this clip's own MP3 — so if the station advanced (a stalled render, a
-	 * track ending, someone else driving the DJ tab), the result is a silent
-	 * mismatch: the wrong cover art over the right audio. Observed in testing,
-	 * where a wedged render left the station several tracks along.
-	 *
-	 * Skipped for a clip that runs to the end of the track: there the handoff is
-	 * the natural end of the song, it happens after the clip's own content is
-	 * already captured, and the trimmed-off tail is the only part that could show
-	 * the next track.
-	 */
-	if (!runsToEnd) {
-		const stillOnAir = await nowPlayingPath()
-		if (stillOnAir !== null && path.basename(stillOnAir) !== filename) {
-			throw new Error(
-				`station moved to ${path.basename(stillOnAir)} during capture — ` +
-					'the recorded video would show the wrong track',
-			)
-		}
-	}
+	step(`capturing ${durationSeconds.toFixed(0)}s (real time, ${job.theme ?? 'default'} theme)`)
+	const rawVideo = await captureVideo(captureDir, durationSeconds, job)
 
 	/**
 	 * Cut the audio from the source file.
@@ -680,7 +653,7 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 	])
 
 	// A clip marked past the end of the track yields a short or empty slice. The
-	// DJ tab flags these with a ⚠ badge; catch them here too, since a batch run
+	// scene editor flags these with a ⚠ badge; catch them here too, since a batch run
 	// is unattended.
 	const audioDuration = await probeDuration(audioSlice)
 	if (audioDuration < durationSeconds - 0.5) {
@@ -820,10 +793,20 @@ function parseArgs(argv: string[]): Options {
 	return options
 }
 
-function buildJobs(clips: Record<string, Clip[]>, options: Options): RenderJob[] {
+function buildJobs(
+	clips: Record<string, Clip[]>,
+	tracks: Map<string, TrackInfo>,
+	options: Options,
+): RenderJob[] {
 	const jobs: RenderJob[] = []
 	for (const [filename, trackClips] of Object.entries(clips)) {
 		if (options.track && filename !== options.track) continue
+		// The page can only be pinned to a track the playlist serves.
+		const track = tracks.get(filename)
+		if (!track) {
+			console.warn(`  skipping ${filename}: not in /api/tracks (removed from the playlist?)`)
+			continue
+		}
 		for (const clip of trackClips) {
 			if (options.clipId && clip.id !== options.clipId) continue
 			const durationSeconds = (clip.endMs - clip.startMs) / 1000
@@ -832,7 +815,15 @@ function buildJobs(clips: Record<string, Clip[]>, options: Options): RenderJob[]
 				continue
 			}
 			const name = `${slugify(filename)}-${clip.id}-${WIDTH}x${HEIGHT}.mp4`
-			jobs.push({ filename, clip, outputPath: path.join(OUTPUT_DIR, name), durationSeconds })
+			jobs.push({
+				filename,
+				clip,
+				outputPath: path.join(OUTPUT_DIR, name),
+				durationSeconds,
+				title: track.title,
+				// A scene's own look wins; one without inherits its track's.
+				theme: clip.theme ?? track.theme,
+			})
 		}
 	}
 	return jobs
@@ -867,7 +858,7 @@ async function preflight(): Promise<void> {
 	 * Check the radio too, not just the site. They are separate servers, and when
 	 * only the radio was down the site check still passed -- the run then failed
 	 * with a bare connection error naming the site URL, which pointed diagnosis at
-	 * the wrong service. Every render drives this server to put a track on air.
+	 * the wrong service. The page reads its track from this server, too.
 	 */
 	try {
 		const response = await fetch(`${RADIO_URL}/status`)
@@ -876,7 +867,7 @@ async function preflight(): Promise<void> {
 		const detail = error instanceof Error ? error.message : String(error)
 		throw new Error(
 			`the radio server at ${RADIO_URL} is not reachable (${detail}) — ` +
-				'it supplies the audio and is what each render puts on air',
+				'it supplies the scenes and the track the page is pinned to',
 		)
 	}
 
@@ -944,34 +935,24 @@ async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2))
 
 	if (!API_KEY) {
-		console.error('RADIO_API_KEY is not set — every DJ and clip route is admin-gated.')
+		console.error('RADIO_API_KEY is not set — the scene list (/admin/clips) is admin-gated.')
 		process.exit(1)
 	}
 
-	// This script reaches into the live broadcast. Refuse to point it anywhere but
-	// a local server, where the only listener is the person recording.
-	const host = new URL(RADIO_URL).hostname
-	if (host !== 'localhost' && host !== '127.0.0.1') {
-		console.error(
-			`Refusing to run against ${RADIO_URL}.\n` +
-				'The DJ routes change what every connected listener hears; this is local-only.',
-		)
-		process.exit(1)
-	}
-
-	const clips = await fetchClips()
-	const jobs = buildJobs(clips, options)
+	const [clips, tracks] = await Promise.all([fetchClips(), fetchTracks()])
+	const jobs = buildJobs(clips, tracks, options)
 
 	if (jobs.length === 0) {
-		console.log('No clips matched. Mark some in the DJ tab first.')
+		console.log('No clips matched. Mark some in the scene editor (/editor.html) first.')
 		return
 	}
 
 	console.log(`${jobs.length} clip(s) to render:`)
 	for (const job of jobs) {
 		const label = job.clip.label ? ` "${job.clip.label}"` : ''
+		const theme = job.theme ?? 'default'
 		console.log(
-			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s -> ${job.outputPath}`,
+			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme} -> ${job.outputPath}`,
 		)
 	}
 	/**

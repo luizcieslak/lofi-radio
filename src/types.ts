@@ -47,6 +47,11 @@ export interface Clip {
 	startMs: number
 	endMs: number
 	label?: string
+	/**
+	 * Look for this scene's video. Resolved as `clip.theme ?? track.theme`, so a
+	 * clip without one inherits the track's; absent on both = the page's default.
+	 */
+	theme?: TrackTheme
 }
 
 export interface NowPlaying {

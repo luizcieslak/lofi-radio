@@ -6,7 +6,7 @@
  * here narrows from `unknown` with real runtime checks — no type assertions.
  */
 
-import type { Clip } from './types'
+import { type Clip, isTrackTheme, TRACK_THEMES } from './types'
 
 /** Guard rails so a bad client can't bloat tracks-meta.json. */
 export const MAX_CLIPS_PER_TRACK = 50
@@ -105,7 +105,7 @@ export function validateClips(
 			return { ok: false, error: `clips[${index}] must be an object` }
 		}
 
-		const { startMs, endMs, label, id } = raw
+		const { startMs, endMs, label, id, theme } = raw
 
 		if (!isFiniteNumber(startMs) || startMs < 0) {
 			return { ok: false, error: `clips[${index}].startMs must be a finite number >= 0` }
@@ -131,6 +131,12 @@ export function validateClips(
 			return { ok: false, error: `clips[${index}].label exceeds ${MAX_LABEL_LENGTH} characters` }
 		}
 
+		// A closed union the recorder and the player branch on, so an unknown value
+		// is rejected rather than stored. Absent means "inherit the track's theme".
+		if (theme !== undefined && !isTrackTheme(theme)) {
+			return { ok: false, error: `clips[${index}].theme must be one of ${TRACK_THEMES.join(', ')}` }
+		}
+
 		if (id !== undefined && typeof id !== 'string') {
 			return { ok: false, error: `clips[${index}].id must be a string` }
 		}
@@ -148,6 +154,9 @@ export function validateClips(
 		const clip: Clip = { id: clipId, startMs: Math.round(startMs), endMs: Math.round(endMs) }
 		if (typeof label === 'string' && label.length > 0) {
 			clip.label = label
+		}
+		if (theme !== undefined) {
+			clip.theme = theme
 		}
 		clips.push(clip)
 	}

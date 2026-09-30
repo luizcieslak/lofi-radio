@@ -172,30 +172,9 @@ class MetadataManager {
 	}
 
 	/**
-	 * Record a measured duration for a track.
-	 *
-	 * Separate from `update()` because that marks a track `manuallyEdited` — this is
-	 * an automated backfill from the frame walk, not a user edit. Used to cache the
-	 * true duration of tracks whose ID3 lacked one, so the walk runs once per track
-	 * ever rather than on every playback. No-ops when a duration is already stored.
-	 */
-	backfillDuration(filename: string, durationMs: number): void {
-		const existing = this.metadata[filename]
-		if (existing?.durationMs !== undefined) return
-
-		this.metadata[filename] = {
-			...(existing ?? this.blankEntry(filename)),
-			durationMs,
-			lastUpdated: Date.now(),
-		}
-		this.save()
-		console.log(`[MetadataManager] Backfilled duration for ${filename}: ${Math.round(durationMs)}ms`)
-	}
-
-	/**
 	 * Minimal metadata entry for a track that has none — dropped straight into
 	 * songs/, or restored without tracks-meta.json. Without this, automated writers
-	 * (duration backfill, clips) would have nowhere to store their value.
+	 * (clips, theme) would have nowhere to store their value.
 	 */
 	private blankEntry(filename: string): TrackMetadata {
 		return {
@@ -251,8 +230,8 @@ class MetadataManager {
 	 * list, so one setter avoids three endpoints and the read-modify-write races
 	 * between them. Validation happens at the route (see `validateClips`).
 	 *
-	 * Like `backfillDuration`, this bypasses `update()` so clip authoring doesn't
-	 * mark a track's title/artist metadata as `manuallyEdited`.
+	 * Bypasses `update()` so clip authoring doesn't mark a track's title/artist
+	 * metadata as `manuallyEdited`.
 	 */
 	setClips(filename: string, clips: Clip[]): Clip[] {
 		const entry = { ...(this.metadata[filename] ?? this.blankEntry(filename)), lastUpdated: Date.now() }
