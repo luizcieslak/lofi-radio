@@ -192,7 +192,10 @@ marks landed seconds off. That machinery is gone.
   authoring data that `/api/tracks` and the player have no use for.
 - **Pulse:** `pulse` (`ScenePulse` in [src/scenePulse.ts](src/scenePulse.ts)) is
   strength, mode and knobs, mirroring cieslak-dev's `pulse-params.ts` URL params.
-  Out-of-range values are rejected, not clamped. The pinned page plays the scene's
+  Out-of-range values are rejected, not clamped. A scene with no `pulse` uses
+  `DEFAULT_SCENE_PULSE` (boombap 0.95, tuned knobs); `resolveScenePulse()` applies it
+  in the recorder, and `GET /admin/clips` sends it to the editor as `defaultPulse`.
+  The pinned page plays the scene's
   own audio silently into the glow's analyser, so the pulse follows the muxed audio.
   The editor drives it live over `postMessage`, and the recorder through
   `window.__radioScene`.

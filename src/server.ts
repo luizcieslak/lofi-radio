@@ -14,6 +14,7 @@ import { normalizeInPlace } from './audioNormalizer'
 import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
+import { DEFAULT_SCENE_PULSE } from './scenePulse'
 import { StreamEngine } from './streamEngine'
 import { isTrackTheme, TRACK_THEMES } from './types'
 
@@ -602,7 +603,9 @@ app.put('/admin/tracks/:filename/clips', requireAuth, (req: Request, res: Respon
  * GET /admin/clips
  */
 app.get('/admin/clips', requireAuth, (_req: Request, res: Response) => {
-	res.json({ clips: metadataManager.getAllClips() })
+	// The default pulse rides along so the editor applies exactly what the
+	// recorder will, without keeping its own copy.
+	res.json({ clips: metadataManager.getAllClips(), defaultPulse: DEFAULT_SCENE_PULSE })
 })
 
 /**

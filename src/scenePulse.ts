@@ -60,6 +60,27 @@ export type ScenePulse = {
 	mode?: PulseMode
 } & Partial<Record<PulseNumberKey, number>>
 
+/**
+ * The pulse a scene gets when it has none of its own — tuned for this library's
+ * lofi / boom-bap material. A scene's own `pulse` (including `amount: 0`, i.e.
+ * explicitly off) always wins; this only fills the gap, so retuning it here
+ * restyles every scene that never chose otherwise. Served to the editor with the
+ * scene list, so the editor, its preview and the recorder can't disagree.
+ */
+export const DEFAULT_SCENE_PULSE: ScenePulse = {
+	amount: 0.95,
+	mode: 'boombap',
+	pulseBass: 1.05,
+	pulseTreble: 0.3,
+	pulseKick: 0.65,
+	pulseSmooth: 1.7,
+}
+
+/** A scene's effective pulse: its own, else the default. */
+export function resolveScenePulse(pulse: ScenePulse | undefined): ScenePulse {
+	return pulse ?? DEFAULT_SCENE_PULSE
+}
+
 export type PulseValidationResult = { ok: true; pulse: ScenePulse } | { ok: false; error: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

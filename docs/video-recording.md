@@ -91,12 +91,27 @@ the same sample.
 
 ### Pulse
 
-Each scene can make the cover glow react to its music. Select a scene and use the
-**Pulse** panel under the stage preview:
+Each scene makes the cover glow react to its music.
 
-- **Strength** (`pulse`, 0–3). 0 is off, which is the default for a new scene unless
-  you've tuned one before. New scenes copy the last pulse you set, since one look
-  usually carries across a batch.
+**Every scene without a pulse of its own uses the default**, `DEFAULT_SCENE_PULSE` in
+[src/scenePulse.ts](../src/scenePulse.ts):
+
+```
+pulse=0.95&pulseMode=boombap&pulseBass=1.05&pulseTreble=0.3&pulseKick=0.65&pulseSmooth=1.7
+```
+
+That covers new scenes and any older ones that never set a pulse. Changing the
+constant restyles all of them at once. The server sends it with the scene list
+(`GET /admin/clips` → `defaultPulse`), so the editor, its preview, "Open in a tab" and
+the recorder always agree. Inheriting scenes show `· default` on their chip, and the
+recorder's dry run prints `(default)`.
+
+To tune a scene, select it and use the **Pulse** panel under the stage preview. The
+first change gives the scene its own pulse, starting from the default, and **↺ Use
+default pulse** drops it again. A scene's own pulse always wins, including strength 0
+(explicitly off).
+
+- **Strength** (`pulse`, 0–3). 0 is off.
 - **Mode** (`pulseMode`): `bands`, `kick`, `transients`, `colour`, `breathe`, `orbit`
   or `boombap`.
 - **Knobs:**
@@ -225,6 +240,32 @@ ffprobe -v error -show_entries format=duration,bit_rate -of csv=p=0 "songs/Novel
 
 If a track differs, pull the file from the server rather than re-encoding the local
 copy.
+
+### Covers blocked by CORS (the CDN's cache headers)
+
+A cover that loads on the player at `/` but shows as a broken image, or as
+`blocked by CORS policy` in the console on the site's `/radio`, is a cache mix-up rather
+than a missing file:
+
+- `cdn.cieslak.dev` sends `Access-Control-Allow-Origin: *` (with `Vary: Origin`)
+  **only when the request carries an `Origin` header.** A plain `<img>` sends none, so
+  its response has no CORS headers and no `Vary`, and is cacheable for 4h
+  (`max-age=14400`).
+- Browsers partition their cache by **site**, and every `localhost` port is the same
+  site. So once the player at `localhost:5634/` loads a cover plainly, the site at
+  `localhost:4321` asks for it with `crossorigin` (the glow reads its pixels) and is
+  served the cached CORS-less copy, which is blocked.
+- The recorder is unaffected: each render uses a fresh browser context with an empty
+  cache.
+- The editor loads covers plainly (it never reads their pixels), so it never trips on
+  this.
+
+**Fixed in cieslak-dev:** every cover the site loads with `crossorigin` goes through
+`corsImageUrl()` (`src/lib/cors-image.ts`), which adds `?cors=1`. CORS loads then use
+their own cache entry, which only ever holds CORS responses, and the CDN ignores the
+param. A CDN-side fix would make it unnecessary: send the CORS header on **every**
+response, e.g. a Cloudflare *Transform Rule → Modify Response Header* on
+`cdn.cieslak.dev` that sets `Access-Control-Allow-Origin: *`.
 
 ### Capture details the script handles
 

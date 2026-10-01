@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import { validateClips } from './clipValidation'
-import { PULSE_NUMBERS, pulseQuery, type ScenePulse, validatePulse } from './scenePulse'
+import {
+	DEFAULT_SCENE_PULSE,
+	PULSE_NUMBERS,
+	pulseQuery,
+	resolveScenePulse,
+	type ScenePulse,
+	validatePulse,
+} from './scenePulse'
 
 describe('validatePulse — accepts', () => {
 	test('just a strength', () => {
@@ -81,6 +88,27 @@ describe('pulseQuery', () => {
 
 	test('strength 0 sends only pulse=0, which the site reads as "off"', () => {
 		expect(pulseQuery({ amount: 0, mode: 'kick', pulseBass: 2 }).toString()).toBe('pulse=0')
+	})
+})
+
+describe('default scene pulse', () => {
+	test('is itself a valid pulse, so it renders exactly as stored scenes do', () => {
+		expect(validatePulse(DEFAULT_SCENE_PULSE)).toEqual({ ok: true, pulse: DEFAULT_SCENE_PULSE })
+	})
+
+	test('fills in only for scenes without a pulse', () => {
+		expect(resolveScenePulse(undefined)).toBe(DEFAULT_SCENE_PULSE)
+		expect(resolveScenePulse({ amount: 0.5, mode: 'orbit' })).toEqual({ amount: 0.5, mode: 'orbit' })
+	})
+
+	test('a scene explicitly off stays off', () => {
+		expect(resolveScenePulse({ amount: 0 })).toEqual({ amount: 0 })
+	})
+
+	test('produces the tuned URL params', () => {
+		expect(pulseQuery(DEFAULT_SCENE_PULSE).toString()).toBe(
+			'pulse=0.95&pulseMode=boombap&pulseBass=1.05&pulseTreble=0.3&pulseKick=0.65&pulseSmooth=1.7',
+		)
 	})
 })
 

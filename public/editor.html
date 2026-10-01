@@ -690,6 +690,7 @@
           <div id="pulseKnobs"></div>
           <button id="pulseReset" style="margin-top: 8px;">Reset knobs</button>
         </details>
+        <button id="pulseUseDefault" hidden title="Drop this scene's own pulse and follow the default">↺ Use default pulse</button>
       </div>
       <label><input type="checkbox" id="previewOn"> Live preview</label>
       <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
@@ -764,8 +765,12 @@
     const KEY_STORAGE = 'radio_api_key'; // shared with the admin panel on /
     const SITE_STORAGE = 'scene_editor_site_url';
     const PREVIEW_STORAGE = 'scene_editor_preview_on';
-    /** Last pulse set on any scene; new scenes start from it (a per-viewer convenience). */
-    const LAST_PULSE_STORAGE = 'scene_editor_last_pulse';
+    /**
+     * The pulse of any scene without its own (DEFAULT_SCENE_PULSE in
+     * src/scenePulse.ts). Comes from the server with the scene list, so the
+     * editor, its preview and the recorder can't drift apart; "off" until loaded.
+     */
+    let defaultPulse = { amount: 0 };
 
     const COLORS = {
       light: { fill: 'rgba(252, 211, 77, 0.28)', edge: '#fcd34d' },
@@ -1322,12 +1327,14 @@
     // ========================================================================
     // Rendering: track pool
     //
-    // Cover <img>s here are CORS requests (crossorigin="anonymous") on purpose.
-    // The CDN only sends Access-Control-Allow-Origin when a request carries an
-    // Origin header, and its plain responses have no `Vary: Origin` — so a plain
-    // <img> load caches a CORS-less copy, which the stage preview's iframe (same
-    // cache partition, and the site loads covers with crossorigin for the glow)
-    // then reuses and gets blocked on, leaving the preview without its artwork.
+    // Cover <img>s here are plain loads (no crossorigin), like the player's on /.
+    // The editor never reads their pixels, so it has no use for CORS — and asking
+    // for it breaks: the CDN answers a request WITHOUT an Origin header with no
+    // CORS headers and no `Vary: Origin`, cacheable for 4h. Browsers share that
+    // cache across localhost ports (same site), so once the player at / has
+    // loaded a cover plainly, a crossorigin load of it here is served the cached
+    // CORS-less copy and blocked. The real fix is on the CDN (always send
+    // Access-Control-Allow-Origin, or Vary: Origin) — see docs/video-recording.md.
     // ========================================================================
     function renderTrackList() {
       const filter = state.filter.trim().toLowerCase();
@@ -1340,7 +1347,7 @@
         const count = (state.clips[track.filename] || []).length;
         const active = state.current?.filename === track.filename;
         const art = track.albumArtUrl
-          ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" loading="lazy" crossorigin="anonymous">`
+          ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" loading="lazy">`
           : '<span class="no-art"></span>';
         return `
           <button class="track${active ? ' active' : ''}" data-filename="${escapeHtml(track.filename)}">
@@ -1358,7 +1365,7 @@
     // Rendering: editor
     // ========================================================================
     function renderEditorShell(track, loading) {
-      const art = track.albumArtUrl ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" crossorigin="anonymous">` : '';
+      const art = track.albumArtUrl ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="">` : '';
       $('editor').innerHTML = `
         <div class="track-head">
           ${art}
@@ -1479,7 +1486,7 @@
               <input class="tc mono" data-field="endMs" value="${formatTime(clip.endMs)}" aria-label="End">
               <button class="icon-btn" data-act="end-here" title="Set end to the playhead">⤓</button>
               <span class="dur mono">${seconds.toFixed(1)}s</span>
-              ${clip.pulse && clip.pulse.amount > 0 ? `<span class="pulse-chip" title="Glow pulse">〰 ${escapeHtml(pulseSummary(clip.pulse))}</span>` : ''}
+              ${pulseOf(clip).amount > 0 ? `<span class="pulse-chip" title="${inheritsPulse(clip) ? 'Default glow pulse' : 'Glow pulse (this scene)'}">〰 ${escapeHtml(pulseSummary(pulseOf(clip)))}${inheritsPulse(clip) ? ' · default' : ''}</span>` : ''}
               ${warnings.length ? `<span class="warn" title="${escapeHtml(warnings.join('; '))}">⚠</span>` : ''}
             </div>
             <div class="scene-row">
@@ -1509,7 +1516,7 @@
       if (clip) params.set('at', String(clip.startMs));
       // An explicit pulse=0 when the scene has none: without a `pulse` param the
       // site pulses at its default strength as soon as audio flows.
-      for (const [key, value] of pulseQuery(clip ? pulseOf(clip) : { amount: 0 })) params.set(key, value);
+      for (const [key, value] of pulseQuery(clip ? pulseOf(clip) : defaultPulse)) params.set(key, value);
       // `stage` is a bare flag; URLSearchParams would write it as `stage=`.
       return `${siteUrl()}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`;
     }
@@ -1528,7 +1535,7 @@
     }
 
     function postPulseToStage(pulse) {
-      postToStage({ type: 'radio-scene:pulse', query: pulseQuery(pulse ?? { amount: 0 }).toString() });
+      postToStage({ type: 'radio-scene:pulse', query: pulseQuery(pulse ?? defaultPulse).toString() });
     }
 
     /** The iframe only reloads when the track or theme changes; pulse and position are live. */
@@ -1594,12 +1601,17 @@
     const pendingPulse = new Map();
 
     function pulseOf(clip) {
-      return pendingPulse.get(clip.id) ?? clip.pulse ?? { amount: 0 };
+      return pendingPulse.get(clip.id) ?? clip.pulse ?? defaultPulse;
     }
 
     function currentPulse() {
       const clip = selectedClip();
-      return clip ? pulseOf(clip) : { amount: 0 };
+      return clip ? pulseOf(clip) : defaultPulse;
+    }
+
+    /** Whether a scene is on the default pulse rather than one of its own. */
+    function inheritsPulse(clip) {
+      return !pendingPulse.has(clip.id) && !clip.pulse;
     }
 
     function pulseSummary(pulse) {
@@ -1628,7 +1640,9 @@
       if (!clip) return;
 
       const pulse = currentPulse();
-      $('pulseSummary').textContent = `— ${pulseSummary(pulse)}`;
+      const inherited = inheritsPulse(clip);
+      $('pulseSummary').textContent = `— ${pulseSummary(pulse)}${inherited ? ' (default)' : ''}`;
+      $('pulseUseDefault').hidden = inherited;
       $('pulseAmount').value = String(pulse.amount);
       $('pulseAmountOut').textContent = pulse.amount.toFixed(2);
       $('pulseMode').value = pulse.mode ?? PULSE_DEFAULT_MODE;
@@ -1643,16 +1657,17 @@
 
     /**
      * Apply a change to the selected scene's pulse: retune the preview now, save
-     * shortly after. Touching the mode or a knob while the pulse is off turns it
-     * on (at your last strength, else 1) — tuning a pulse you can't see is the
-     * one thing those controls can't usefully do.
+     * shortly after. The first tweak gives a scene its own pulse, starting from
+     * the default. Touching the mode or a knob while the pulse is off turns it
+     * on at the default strength — tuning a pulse you can't see is the one thing
+     * those controls can't usefully do.
      */
     function tweakPulse(changes) {
       const clip = selectedClip();
       if (!clip) return;
       const next = { ...pulseOf(clip), ...changes };
       if (next.amount === 0 && !('amount' in changes)) {
-        next.amount = lastPulse()?.amount || 1;
+        next.amount = defaultPulse.amount || 1;
       }
       pendingPulse.set(clip.id, next);
       renderPulsePanel();
@@ -1680,7 +1695,6 @@
       const pending = pendingPulse.get(clipId);
       if (!pending) return;
       const pulse = normalizePulse(pending);
-      writeStorage(LAST_PULSE_STORAGE, JSON.stringify(pulse));
       const saved = await updateScene(clipId, { pulse });
       // Only clear what was saved: a newer tweak made during the request stays
       // pending and has its own save scheduled.
@@ -1692,13 +1706,15 @@
       // status line says the save failed; the next tweak retries it.
     }
 
-    function lastPulse() {
-      try {
-        const stored = JSON.parse(readStorage(LAST_PULSE_STORAGE) || 'null');
-        return stored && typeof stored.amount === 'number' ? stored : undefined;
-      } catch {
-        return undefined;
-      }
+    /** Drop a scene's own pulse so it follows the default again. */
+    function useDefaultPulse() {
+      const clip = selectedClip();
+      if (!clip) return;
+      clearTimeout(pulseSaveTimers.get(clip.id));
+      pulseSaveTimers.delete(clip.id);
+      pendingPulse.delete(clip.id);
+      postPulseToStage(defaultPulse);
+      void updateScene(clip.id, { pulse: undefined });
     }
 
 
@@ -1777,10 +1793,8 @@
       const theme = state.current.track.theme ?? 'light';
       const startMs = Math.round(start * 1000);
       const endMs = Math.round(end * 1000);
-      // Pulse settings carry over from the last scene you tuned, since a look is
-      // usually reused across a batch; tune it per scene from there.
-      const pulse = lastPulse();
-      const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme, ...(pulse ? { pulse } : {}) }]);
+      // No pulse of its own: a new scene follows the default until you tune it.
+      const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme }]);
       if (!saved) return;
 
       const added = saved.find(clip => clip.startMs === startMs && clip.endMs === endMs);
@@ -2064,6 +2078,7 @@
       const clip = selectedClip();
       if (clip && pendingPulse.has(clip.id)) scheduleSave(clip.id, 0);
     });
+    $('pulseUseDefault').addEventListener('click', useDefaultPulse);
     $('pulseReset').addEventListener('click', () => {
       const knobs = Object.fromEntries(PULSE_NUMBERS.map(({ key, default: value }) => [key, value]));
       tweakPulse(knobs);
@@ -2117,7 +2132,8 @@
         const [tracksResponse, clipsResponse] = await Promise.all([fetch('/api/tracks'), api('/admin/clips')]);
         if (!tracksResponse.ok || !clipsResponse.ok) throw new Error('could not load tracks or scenes');
         const { tracks } = await tracksResponse.json();
-        const { clips } = await clipsResponse.json();
+        const { clips, defaultPulse: serverDefault } = await clipsResponse.json();
+        if (serverDefault && typeof serverDefault.amount === 'number') defaultPulse = serverDefault;
         state.tracks = tracks.map(track => ({ ...track, filename: filenameOf(track) }));
         state.clips = clips;
       } catch (error) {

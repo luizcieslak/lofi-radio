@@ -47,7 +47,7 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { pulseQuery } from '../src/scenePulse'
+import { pulseQuery, resolveScenePulse, type ScenePulse } from '../src/scenePulse'
 import { type Clip, isTrackTheme, type TrackTheme } from '../src/types'
 
 /** The pinned page's scene-audio hook (cieslak-dev `radio-player.ts`, `RadioScene`). */
@@ -193,6 +193,8 @@ interface RenderJob {
 	title: string
 	/** `clip.theme ?? track.theme`; undefined leaves the page on its default. */
 	theme?: TrackTheme
+	/** `clip.pulse`, else the default scene pulse (see src/scenePulse.ts). */
+	pulse: ScenePulse
 }
 
 /** The subset of the public `/api/tracks` entries this script reads. */
@@ -407,16 +409,16 @@ function stagePageUrl(job: RenderJob): string {
 	params.set('track', job.filename)
 	if (job.theme) params.set('theme', job.theme)
 	params.set('at', String(job.clip.startMs))
-	// An explicit pulse=0 when the scene has none: without a `pulse` param the
-	// site pulses at its default strength as soon as audio flows.
-	for (const [key, value] of pulseQuery(job.clip.pulse ?? { amount: 0 })) params.set(key, value)
+	// Always explicit, `pulse=0` included: without a `pulse` param the site would
+	// pulse at its own default strength as soon as audio flows.
+	for (const [key, value] of pulseQuery(job.pulse)) params.set(key, value)
 	// `stage` is a bare flag; URLSearchParams would write it as `stage=`.
 	return `${SITE_URL}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`
 }
 
 /** Whether the scene's glow reacts to the music, i.e. its audio must play on the page. */
 function pulses(job: RenderJob): boolean {
-	return (job.clip.pulse?.amount ?? 0) > 0
+	return job.pulse.amount > 0
 }
 
 /**
@@ -907,6 +909,7 @@ function buildJobs(
 				title: track.title,
 				// A scene's own look wins; one without inherits its track's.
 				theme: clip.theme ?? track.theme,
+				pulse: resolveScenePulse(clip.pulse),
 			})
 		}
 	}
@@ -1040,7 +1043,8 @@ async function main(): Promise<void> {
 	for (const job of jobs) {
 		const label = job.clip.label ? ` "${job.clip.label}"` : ''
 		const theme = job.theme ?? 'default'
-		const pulse = pulses(job) ? ` pulse ${job.clip.pulse?.mode ?? 'bands'}@${job.clip.pulse?.amount}` : ''
+		const source = job.clip.pulse ? '' : ' (default)'
+		const pulse = pulses(job) ? ` pulse ${job.pulse.mode ?? 'bands'}@${job.pulse.amount}${source}` : ''
 		console.log(
 			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme}${pulse} -> ${job.outputPath}`,
 		)
