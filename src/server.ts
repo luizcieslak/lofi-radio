@@ -532,13 +532,17 @@ app.get('/admin/backup', requireAuth, (req: Request, res: Response) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The raw source MP3, for the editor to decode and play locally.
- * GET /admin/songs/:filename/audio
+ * The raw source MP3, decoded with Web Audio by the scene editor and by the
+ * site's pinned-track mode (which plays a scene's own audio silently into the
+ * glow's analyser, so the pulse in a recording follows the audio that gets muxed).
+ * GET /api/tracks/:filename/audio
  *
- * Admin-gated because the editor fetches it with the X-API-Key header and
- * decodes it with Web Audio; it is never an <audio src>, so no query-string key.
+ * Public, unlike the rest of this section: the site fetches it cross-origin with
+ * no API key, and keys don't belong in page URLs. The same audio is already public
+ * on /stream; this only makes whole files downloadable, which is fine for a
+ * local-only campaign branch and is one more reason it must not be deployed.
  */
-app.get('/admin/songs/:filename/audio', requireAuth, (req: Request, res: Response) => {
+app.get('/api/tracks/:filename/audio', (req: Request, res: Response) => {
 	const filename = req.params.filename
 	if (!filename) {
 		res.status(400).json({ error: 'Filename required' })

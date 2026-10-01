@@ -100,6 +100,14 @@ describe('validateClips — accepts', () => {
 		expect(inherit.ok && 'theme' in (inherit.clips[0] ?? {})).toBe(false)
 	})
 
+	test('a recorded flag, storing only true', () => {
+		const marked = validateClips([{ startMs: 0, endMs: 10, recorded: true }], sequentialIds())
+		expect(marked.ok && marked.clips[0]?.recorded).toBe(true)
+
+		const unmarked = validateClips([{ startMs: 0, endMs: 10, recorded: false }], sequentialIds())
+		expect(unmarked.ok && 'recorded' in (unmarked.clips[0] ?? {})).toBe(false)
+	})
+
 	test('startMs of exactly 0', () => {
 		expect(validateClips([{ startMs: 0, endMs: 1 }], sequentialIds()).ok).toBe(true)
 	})
@@ -167,6 +175,11 @@ describe('validateClips — rejects', () => {
 		expectError([{ startMs: 0, endMs: 10, theme: 'Dark' }], 'theme must be one of')
 		// null is not "clear" here: the whole list is replaced, so omit the key instead.
 		expectError([{ startMs: 0, endMs: 10, theme: null }], 'theme must be one of')
+	})
+
+	test('a non-boolean recorded flag', () => {
+		expectError([{ startMs: 0, endMs: 10, recorded: 'yes' }], 'recorded must be a boolean')
+		expectError([{ startMs: 0, endMs: 10, recorded: 1 }], 'recorded must be a boolean')
 	})
 
 	test('a non-string id', () => {

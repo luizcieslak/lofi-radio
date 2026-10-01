@@ -168,13 +168,13 @@ REST API and web server with endpoints:
 
 **Scene editor (campaign branch only — `campaign/dj-controls`, requires `X-API-Key`):**
 - `GET /editor.html` — the scene editor ([public/editor.html](public/editor.html))
-- `GET /admin/songs/:filename/audio` — the raw source MP3, for the editor to decode
+- `GET /api/tracks/:filename/audio` — the raw source MP3, decoded by the editor and the site's pinned mode. **Public** (no key — the site fetches it), so this branch must never be deployed
 - `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's scenes (wholesale)
 - `GET /admin/clips` — all scenes keyed by filename (JSON export + pool badges)
 
-**Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`) is a slice of a
-song to turn into a ~1min promo video, plus the light/dark look of the page while it is
-filmed. They are marked in the editor, which **plays source files locally**: it fetches
+**Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`, `pulse?`, `recorded?`) is a
+slice of a song to turn into a ~1min promo video, plus the look of the page while it is
+filmed: light/dark, and how the cover glow pulses to the music. They are marked in the editor, which **plays source files locally**: it fetches
 the MP3 once, decodes it with Web Audio and plays from memory, so the playhead is
 sample-exact and seeks are instant. It never uses `/stream`. An earlier version
 auditioned through the live broadcast (DJ seek/jump routes), which put the engine's
@@ -190,6 +190,15 @@ marks landed seconds off. That machinery is gone.
   dropped with the track on delete.
 - **Not public:** `Clip` is deliberately absent from the public `Track` type. It is
   authoring data that `/api/tracks` and the player have no use for.
+- **Pulse:** `pulse` (`ScenePulse` in [src/scenePulse.ts](src/scenePulse.ts)) is
+  strength, mode and knobs, mirroring cieslak-dev's `pulse-params.ts` URL params.
+  Out-of-range values are rejected, not clamped. The pinned page plays the scene's
+  own audio silently into the glow's analyser, so the pulse follows the muxed audio.
+  The editor drives it live over `postMessage`, and the recorder through
+  `window.__radioScene`.
+- **Recorded:** `recorded` is ticked by hand in the editor once a scene's video is
+  done. It is stored only when true, never set automatically, and batch renders skip
+  it (`--clip` or `--include-recorded` override). Each scene renders to its own file.
 - **Validation** lives in a pure, unit-tested
   [src/clipValidation.ts](src/clipValidation.ts), including `parseTimestamp`. The
   editor carries a browser copy of that function; keep the two in sync.
@@ -197,11 +206,15 @@ marks landed seconds off. That machinery is gone.
 **Batch rendering.** [scripts/recordClips.ts](scripts/recordClips.ts) turns every scene
 into a 1080x1920 MP4 unattended. For each scene it:
 
-1. Opens the `cieslak-dev` radio page **pinned** to the scene's track and theme
-   (`?stage&track=<file>&theme=<t>`; the site then ignores the live station entirely).
-2. Waits for the artwork and the expected `#radio-title`.
-3. Captures with Chromium's screencast.
-4. Cuts the audio from the source MP3 and muxes.
+1. Opens the `cieslak-dev` radio page **pinned** to the scene's track, theme and pulse
+   (`?stage&track=<file>&theme=<t>&at=<ms>&pulse=…`; the site then ignores the live
+   station entirely).
+2. Waits for the artwork and the expected `#radio-title`, plus the decoded scene audio
+   if it pulses.
+3. Starts that audio on the page with a 2s pre-roll.
+4. Captures with Chromium's screencast. Chromium is launched with `--enable-gpu`;
+   software rendering ran the glow at ~6 fps.
+5. Cuts the audio from the source MP3 and muxes.
 
 Audio never comes from the capture: Playwright records none, and a capture would add a
 second generational loss. The script doesn't touch the broadcast. Details, including

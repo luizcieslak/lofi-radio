@@ -18,10 +18,13 @@
  *   ffmpeg mux  -> the clip, with a fade-out on both streams
  *
  * Usage:
- *   bun run scripts/recordClips.ts                       # every marked clip
- *   bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's clips
- *   bun run scripts/recordClips.ts --clip a1b2c3         # one clip
+ *   bun run scripts/recordClips.ts                       # every scene not yet marked recorded
+ *   bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's scenes
+ *   bun run scripts/recordClips.ts --clip a1b2c3         # one scene (even if marked recorded)
+ *   bun run scripts/recordClips.ts --include-recorded    # also re-render recorded scenes
  *   bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
+ *
+ * Every scene renders to its own file, `<track-slug>-<scene-id>-1080x1920.mp4`.
  *
  * Requires the radio running on `campaign/dj-controls` (for the scene data), the
  * site running on :4321 (with pinned-track mode), RADIO_API_KEY, ffmpeg, and
@@ -44,7 +47,15 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { pulseQuery } from '../src/scenePulse'
 import { type Clip, isTrackTheme, type TrackTheme } from '../src/types'
+
+/** The pinned page's scene-audio hook (cieslak-dev `radio-player.ts`, `RadioScene`). */
+declare global {
+	interface Window {
+		__radioScene?: { ready: Promise<boolean>; play: (atMs: number) => void }
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -152,6 +163,18 @@ const SONGS_DIR = 'songs'
  * button so only the artwork and title are in frame.
  */
 const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage'
+
+/**
+ * How long the scene's audio runs on the page before the first frame, when the
+ * glow pulses. The pulse's drum detectors judge each hit against a running
+ * average of recent ones, so from cold they misfire for the first moments; a
+ * pre-roll lets them settle and puts the glow already in motion at frame 0.
+ * Clamped to the scene's start, since there is nothing before 0:00.
+ */
+const PULSE_PREROLL_MS = 2000
+
+/** Ceiling on the pinned page decoding the scene's audio for the pulse. */
+const SCENE_AUDIO_TIMEOUT_MS = 30_000
 
 // ---------------------------------------------------------------------------
 // Types
@@ -380,8 +403,20 @@ async function fetchTracks(): Promise<Map<string, TrackInfo>> {
  * same URL, so what you preview is what gets filmed.
  */
 function stagePageUrl(job: RenderJob): string {
-	const theme = job.theme ? `&theme=${job.theme}` : ''
-	return `${SITE_URL}/en/radio/?${PAGE_FLAGS}&track=${encodeURIComponent(job.filename)}${theme}`
+	const params = new URLSearchParams(PAGE_FLAGS)
+	params.set('track', job.filename)
+	if (job.theme) params.set('theme', job.theme)
+	params.set('at', String(job.clip.startMs))
+	// An explicit pulse=0 when the scene has none: without a `pulse` param the
+	// site pulses at its default strength as soon as audio flows.
+	for (const [key, value] of pulseQuery(job.clip.pulse ?? { amount: 0 })) params.set(key, value)
+	// `stage` is a bare flag; URLSearchParams would write it as `stage=`.
+	return `${SITE_URL}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`
+}
+
+/** Whether the scene's glow reacts to the music, i.e. its audio must play on the page. */
+function pulses(job: RenderJob): boolean {
+	return (job.clip.pulse?.amount ?? 0) > 0
 }
 
 /**
@@ -417,7 +452,20 @@ async function captureVideo(outDir: string, seconds: number, job: RenderJob): Pr
 	 * browser, no encoder and no open handles, just an idle process.
 	 */
 	const browser = await withTimeout(
-		chromium.launch({ channel: 'chromium' }),
+		/**
+		 * Two flags, both load-bearing:
+		 * - `--enable-gpu`: headless Chromium otherwise renders with SwiftShader
+		 *   (software), and the blurred 1080x1920 glow runs at ~17 fps — ~6 fps
+		 *   while pulsing, which made the pulse land ~200ms late and step visibly.
+		 *   With the real GPU it holds 60 fps. Measured on this machine's Intel iGPU.
+		 * - The no-gesture autoplay policy lets a pulsing scene's page start its
+		 *   (silent) audio from `__radioScene.play()`; without it the AudioContext
+		 *   stays suspended and the glow never moves.
+		 */
+		chromium.launch({
+			channel: 'chromium',
+			args: ['--enable-gpu', '--autoplay-policy=no-user-gesture-required'],
+		}),
 		LAUNCH_TIMEOUT_MS,
 		`the browser did not start within ${LAUNCH_TIMEOUT_MS / 1000}s`,
 	)
@@ -488,6 +536,19 @@ async function captureVideo(outDir: string, seconds: number, job: RenderJob): Pr
 				{ timeout: CONTENT_TIMEOUT_MS },
 			)
 
+			if (pulses(job)) {
+				phase = 'waiting for the page to decode the scene audio'
+				await page.waitForFunction(() => window.__radioScene !== undefined, null, {
+					timeout: CONTENT_TIMEOUT_MS,
+				})
+				const decoded = await withTimeout(
+					page.evaluate(() => window.__radioScene?.ready ?? Promise.resolve(false)),
+					SCENE_AUDIO_TIMEOUT_MS,
+					`the page did not decode the scene audio within ${SCENE_AUDIO_TIMEOUT_MS / 1000}s`,
+				)
+				if (!decoded) throw new Error('the page could not load the scene audio, so the glow cannot pulse')
+			}
+
 			phase = 'waiting for the page to settle'
 			await page.waitForTimeout(SETTLE_MS)
 
@@ -543,6 +604,19 @@ async function captureVideo(outDir: string, seconds: number, job: RenderJob): Pr
 			while (latest === null) {
 				if (Date.now() > firstFrameBy) throw new Error('the screencast produced no frames')
 				await new Promise(resolve => setTimeout(resolve, 10))
+			}
+
+			/**
+			 * Start the scene's audio on the page so the glow pulses to it — the same
+			 * slice that gets muxed in below, played silently into the analyser. It
+			 * starts a pre-roll early so the detectors are warm by frame 0, and the
+			 * frame clock starts when the scene's own start is reached.
+			 */
+			if (pulses(job)) {
+				phase = 'starting the scene audio'
+				const prerollMs = Math.min(PULSE_PREROLL_MS, job.clip.startMs)
+				await page.evaluate(atMs => window.__radioScene?.play(atMs), job.clip.startMs - prerollMs)
+				await new Promise(resolve => setTimeout(resolve, prerollMs))
 			}
 
 			phase = `holding for the ${seconds.toFixed(0)}s capture`
@@ -779,15 +853,18 @@ interface Options {
 	track?: string
 	clipId?: string
 	dryRun: boolean
+	/** Also render scenes ticked as recorded in the editor. */
+	includeRecorded: boolean
 }
 
 function parseArgs(argv: string[]): Options {
-	const options: Options = { dryRun: false }
+	const options: Options = { dryRun: false, includeRecorded: false }
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index]
 		if (arg === '--dry-run') options.dryRun = true
 		else if (arg === '--track') options.track = argv[++index]
 		else if (arg === '--clip') options.clipId = argv[++index]
+		else if (arg === '--include-recorded') options.includeRecorded = true
 		else throw new Error(`unknown argument: ${arg}`)
 	}
 	return options
@@ -799,6 +876,7 @@ function buildJobs(
 	options: Options,
 ): RenderJob[] {
 	const jobs: RenderJob[] = []
+	let skippedRecorded = 0
 	for (const [filename, trackClips] of Object.entries(clips)) {
 		if (options.track && filename !== options.track) continue
 		// The page can only be pinned to a track the playlist serves.
@@ -809,6 +887,12 @@ function buildJobs(
 		}
 		for (const clip of trackClips) {
 			if (options.clipId && clip.id !== options.clipId) continue
+			// A scene ticked as recorded is done; a batch leaves it alone. Naming it
+			// with --clip is explicit, so that still renders it.
+			if (clip.recorded && !options.clipId && !options.includeRecorded) {
+				skippedRecorded++
+				continue
+			}
 			const durationSeconds = (clip.endMs - clip.startMs) / 1000
 			if (durationSeconds <= 0) {
 				console.warn(`  skipping ${filename} clip ${clip.id}: endMs is not after startMs`)
@@ -825,6 +909,11 @@ function buildJobs(
 				theme: clip.theme ?? track.theme,
 			})
 		}
+	}
+	if (skippedRecorded > 0) {
+		console.log(
+			`  skipping ${skippedRecorded} scene(s) already marked recorded (--include-recorded renders them)`,
+		)
 	}
 	return jobs
 }
@@ -951,8 +1040,9 @@ async function main(): Promise<void> {
 	for (const job of jobs) {
 		const label = job.clip.label ? ` "${job.clip.label}"` : ''
 		const theme = job.theme ?? 'default'
+		const pulse = pulses(job) ? ` pulse ${job.clip.pulse?.mode ?? 'bands'}@${job.clip.pulse?.amount}` : ''
 		console.log(
-			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme} -> ${job.outputPath}`,
+			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme}${pulse} -> ${job.outputPath}`,
 		)
 	}
 	/**

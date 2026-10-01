@@ -370,6 +370,28 @@
       border-left-color: var(--dark);
     }
 
+    /* Done scenes recede so the ones still to record stand out. */
+    .scene.recorded:not(.selected) {
+      opacity: 0.55;
+    }
+
+    .recorded-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-dim);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .recorded-toggle input {
+      accent-color: var(--ok);
+    }
+
+    .scene.recorded .recorded-toggle {
+      color: var(--ok);
+    }
+
     .scene.selected {
       border-color: rgba(255, 255, 255, 0.35);
       background: var(--bg-card-hover);
@@ -463,6 +485,87 @@
     .preview-meta {
       color: var(--text-dim);
       line-height: 1.5;
+    }
+
+    /* ── Pulse ──────────────────────────────────────────────────────────── */
+
+    .pulse-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--bg-card);
+    }
+
+    .pulse-row {
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr) 40px;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-dim);
+    }
+
+    .range-wrap {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .range-ends {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      line-height: 1;
+      color: var(--text-dim);
+      opacity: 0.7;
+    }
+
+    .pulse-row input[type='range'] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .pulse-row output {
+      text-align: right;
+      color: #fff;
+    }
+
+    .pulse-row.changed span {
+      color: #fff;
+    }
+
+    .pulse-panel select {
+      font: inherit;
+      color: inherit;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 6px;
+    }
+
+    .pulse-panel details summary {
+      cursor: pointer;
+      color: var(--text-dim);
+      padding: 4px 0;
+    }
+
+    .pulse-panel details[open] summary {
+      margin-bottom: 6px;
+    }
+
+    #pulseKnobs {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .pulse-chip {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: rgba(102, 126, 234, 0.2);
+      color: #c7d2fe;
     }
 
     .preview label {
@@ -561,9 +664,33 @@
     <aside class="pane preview">
       <div class="section-title">Stage preview</div>
       <div class="stage" id="stage">
-        <iframe id="stageFrame" title="Stage preview" tabindex="-1"></iframe>
+        <!-- allow="autoplay": the pinned page plays the scene's audio (silently)
+             to drive the pulse, and a cross-origin frame can only start audio when
+             its embedder delegates autoplay. -->
+        <iframe id="stageFrame" title="Stage preview" tabindex="-1" allow="autoplay"></iframe>
       </div>
       <div class="preview-meta" id="previewMeta"></div>
+      <div class="pulse-panel" id="pulsePanel" hidden>
+        <div class="section-title">Pulse <span id="pulseSummary" style="text-transform: none; letter-spacing: 0;"></span></div>
+        <label class="pulse-row">
+          <span>Strength</span>
+          <span class="range-wrap">
+            <input type="range" id="pulseAmount" min="0" step="0.05">
+            <span class="range-ends"><span>0</span><span id="pulseAmountMax"></span></span>
+          </span>
+          <output id="pulseAmountOut"></output>
+        </label>
+        <label class="pulse-row">
+          <span>Mode</span>
+          <select id="pulseMode"></select>
+          <span></span>
+        </label>
+        <details id="pulseKnobsWrap">
+          <summary>Knobs</summary>
+          <div id="pulseKnobs"></div>
+          <button id="pulseReset" style="margin-top: 8px;">Reset knobs</button>
+        </details>
+      </div>
       <label><input type="checkbox" id="previewOn"> Live preview</label>
       <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
       <a id="previewOpen" href="#" target="_blank" rel="noopener" style="color: var(--text-dim);">Open in a tab ↗</a>
@@ -587,6 +714,49 @@
     const FADE_SECONDS = 2;
     const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage';
 
+    // Mirrored from src/scenePulse.ts (the validated, tested copy), which mirrors
+    // the site's src/lib/pulse-params.ts. Keep all three in step.
+    const PULSE_MODES = ['bands', 'kick', 'transients', 'colour', 'breathe', 'orbit', 'boombap'];
+    const PULSE_DEFAULT_MODE = 'bands';
+    const PULSE_AMOUNT_MAX = 3;
+    const PULSE_NUMBERS = [
+      { key: 'pulseBass', label: 'Bass', min: 0, max: 4, default: 1 },
+      { key: 'pulseTreble', label: 'Treble', min: 0, max: 4, default: 1 },
+      { key: 'pulseKick', label: 'Kick', min: 0, max: 4, default: 1 },
+      { key: 'pulseSnare', label: 'Snare', min: 0, max: 4, default: 1 },
+      { key: 'pulseShimmer', label: 'Shimmer', min: 0, max: 4, default: 1 },
+      { key: 'pulseSmooth', label: 'Smooth', min: 0.25, max: 4, default: 1 },
+      { key: 'pulseKickShape', label: 'Kick shape', min: 1, max: 6, default: 2 },
+      { key: 'pulseSnareStrict', label: 'Snare strict', min: 1, max: 6, default: 3.5 },
+    ];
+
+    /**
+     * The site's URL params for a pulse, defaults omitted — the same string the
+     * recorder puts in the page URL (pulseQuery in src/scenePulse.ts).
+     */
+    function pulseQuery(pulse) {
+      const params = new URLSearchParams();
+      if (!pulse) return params;
+      params.set('pulse', String(pulse.amount));
+      if (pulse.amount === 0) return params;
+      if (pulse.mode && pulse.mode !== PULSE_DEFAULT_MODE) params.set('pulseMode', pulse.mode);
+      for (const { key, default: fallback } of PULSE_NUMBERS) {
+        const value = pulse[key];
+        if (value !== undefined && value !== fallback) params.set(key, String(value));
+      }
+      return params;
+    }
+
+    /** Drop settings equal to their default, so stored scenes stay minimal. */
+    function normalizePulse(pulse) {
+      const next = { amount: pulse.amount };
+      if (pulse.mode && pulse.mode !== PULSE_DEFAULT_MODE) next.mode = pulse.mode;
+      for (const { key, default: fallback } of PULSE_NUMBERS) {
+        if (pulse[key] !== undefined && pulse[key] !== fallback) next[key] = pulse[key];
+      }
+      return next;
+    }
+
     /** Width of the zoomed strip under the overview, centred on the playhead. */
     const DETAIL_WINDOW_SECONDS = 10;
 
@@ -594,6 +764,8 @@
     const KEY_STORAGE = 'radio_api_key'; // shared with the admin panel on /
     const SITE_STORAGE = 'scene_editor_site_url';
     const PREVIEW_STORAGE = 'scene_editor_preview_on';
+    /** Last pulse set on any scene; new scenes start from it (a per-viewer convenience). */
+    const LAST_PULSE_STORAGE = 'scene_editor_last_pulse';
 
     const COLORS = {
       light: { fill: 'rgba(252, 211, 77, 0.28)', edge: '#fcd34d' },
@@ -883,8 +1055,11 @@
         player.playing = false;
         player.offset = until;
         player.previewClipId = null;
+        postToStage({ type: 'radio-scene:pause' });
         renderTransport();
       };
+      // The stage plays the same audio silently, so its glow pulses in step.
+      postToStage({ type: 'radio-scene:play', atMs: start * 1000 });
 
       Object.assign(player, {
         source,
@@ -900,6 +1075,7 @@
       if (!player.playing) return;
       player.offset = position();
       stopSource();
+      postToStage({ type: 'radio-scene:pause' });
       player.playing = false;
       player.previewClipId = null;
       renderTransport();
@@ -1294,7 +1470,7 @@
           return `<button data-act="theme" data-theme="${value}" class="${cls}" title="${title}">${value === 'light' ? '☀ Light' : '☾ Dark'}</button>`;
         };
         return `
-          <div class="scene theme-${theme === 'dark' ? 'dark' : 'light'}${clip.id === state.selectedClipId ? ' selected' : ''}" data-id="${escapeHtml(clip.id)}">
+          <div class="scene theme-${theme === 'dark' ? 'dark' : 'light'}${clip.id === state.selectedClipId ? ' selected' : ''}${clip.recorded ? ' recorded' : ''}" data-id="${escapeHtml(clip.id)}">
             <div class="scene-row">
               <button class="icon-btn" data-act="preview" title="Preview as rendered, with the ${FADE_SECONDS}s fade-out (P)">▶</button>
               <input class="tc mono" data-field="startMs" value="${formatTime(clip.startMs)}" aria-label="Start">
@@ -1303,11 +1479,15 @@
               <input class="tc mono" data-field="endMs" value="${formatTime(clip.endMs)}" aria-label="End">
               <button class="icon-btn" data-act="end-here" title="Set end to the playhead">⤓</button>
               <span class="dur mono">${seconds.toFixed(1)}s</span>
+              ${clip.pulse && clip.pulse.amount > 0 ? `<span class="pulse-chip" title="Glow pulse">〰 ${escapeHtml(pulseSummary(clip.pulse))}</span>` : ''}
               ${warnings.length ? `<span class="warn" title="${escapeHtml(warnings.join('; '))}">⚠</span>` : ''}
             </div>
             <div class="scene-row">
               <span class="theme-toggle">${themeButton('light')}${themeButton('dark')}</span>
               <input class="label" data-field="label" value="${escapeHtml(clip.label || '')}" placeholder="Label (optional)" maxlength="200">
+              <label class="recorded-toggle" title="Tick once this scene's video is done; batch renders skip it">
+                <input type="checkbox" data-field="recorded"${clip.recorded ? ' checked' : ''}> Recorded
+              </label>
               <button class="icon-btn" data-act="delete" title="Delete scene">🗑</button>
             </div>
           </div>`;
@@ -1321,10 +1501,38 @@
       return (readStorage(SITE_STORAGE) || DEFAULT_SITE_URL).replace(/\/+$/, '');
     }
 
-    function stageUrl(filename, theme) {
-      const themeParam = theme ? `&theme=${theme}` : '';
-      return `${siteUrl()}/en/radio/?${PAGE_FLAGS}&track=${encodeURIComponent(filename)}${themeParam}`;
+    /** Mirrors stagePageUrl in scripts/recordClips.ts: what you preview is what gets filmed. */
+    function stageUrl(filename, theme, clip) {
+      const params = new URLSearchParams(PAGE_FLAGS);
+      params.set('track', filename);
+      if (theme) params.set('theme', theme);
+      if (clip) params.set('at', String(clip.startMs));
+      // An explicit pulse=0 when the scene has none: without a `pulse` param the
+      // site pulses at its default strength as soon as audio flows.
+      for (const [key, value] of pulseQuery(clip ? pulseOf(clip) : { amount: 0 })) params.set(key, value);
+      // `stage` is a bare flag; URLSearchParams would write it as `stage=`.
+      return `${siteUrl()}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`;
     }
+
+    /**
+     * Talk to the pinned page in the preview (see cieslak-dev radio-player.ts and
+     * radio.astro): play/pause its scene audio in step with this editor, and
+     * retune the pulse live. Posted to whatever is loaded; the page ignores
+     * messages it doesn't know, and one sent mid-load is covered by the
+     * `radio-scene:ready` handshake below.
+     */
+    function postToStage(message) {
+      const frame = $('stageFrame');
+      if (!frame.getAttribute('src')) return;
+      frame.contentWindow?.postMessage(message, siteUrl());
+    }
+
+    function postPulseToStage(pulse) {
+      postToStage({ type: 'radio-scene:pulse', query: pulseQuery(pulse ?? { amount: 0 }).toString() });
+    }
+
+    /** The iframe only reloads when the track or theme changes; pulse and position are live. */
+    let stageKey = null;
 
     function updatePreview() {
       const frameEl = $('stageFrame');
@@ -1337,19 +1545,162 @@
 
       const clip = selectedClip();
       const theme = resolveTheme(clip);
-      const url = stageUrl(state.current.filename, theme);
+      const url = stageUrl(state.current.filename, theme, clip);
       open.href = url;
+      renderPulsePanel();
       meta.innerHTML = `${clip ? `Scene ${formatShort(clip.startMs / 1000)}–${formatShort(clip.endMs / 1000)}` : 'Track default'}
         · <strong>${theme || 'page default'}</strong>`;
 
       if (!$('previewOn').checked) {
         if (frameEl.getAttribute('src')) frameEl.removeAttribute('src');
+        stageKey = null;
         return;
       }
-      // Swap only on change: the page reads ?theme= before first paint, so a new
-      // look needs a fresh load, but reloading an identical URL just flickers.
-      if (frameEl.getAttribute('src') !== url) frameEl.setAttribute('src', url);
+      // Reload for a new track, theme or scene: the page reads ?theme= before
+      // first paint and decodes the track's audio on load, and a fresh load per
+      // scene keeps the iframe's URL equal to that scene's real settings (what
+      // "Open in a tab" and the recorder use). Tweaks within a scene retune the
+      // page in place, which keeps slider moves instant.
+      const key = `${state.current.filename}|${theme || ''}|${clip?.id ?? ''}|${siteUrl()}`;
+      if (key !== stageKey) {
+        stageKey = key;
+        frameEl.setAttribute('src', url);
+      } else {
+        postPulseToStage(clip ? pulseOf(clip) : undefined);
+      }
     }
+
+    // The pinned page reports when its scene audio is decoded: bring it up to
+    // date with the pulse being edited and, if the editor is mid-playback, with
+    // the playhead, so a preview that loaded late still pulses in step.
+    window.addEventListener('message', event => {
+      if (event.source !== $('stageFrame').contentWindow) return;
+      if (event.data?.type !== 'radio-scene:ready') return;
+      const clip = selectedClip();
+      postPulseToStage(clip ? pulseOf(clip) : undefined);
+      if (player.playing) postToStage({ type: 'radio-scene:play', atMs: position() * 1000 });
+    });
+
+    // ========================================================================
+    // Pulse panel — edits the selected scene's pulse. Moving a control retunes
+    // the preview live; letting go saves the scene.
+    // ========================================================================
+    /**
+     * Pulse edits not yet confirmed by the server, by scene id. The panel and the
+     * preview always read through this, so a save that is slow — or fails — can
+     * never snap the scene back to its stored pulse (or to "off") mid-edit. An
+     * entry is dropped only once the server has saved exactly that value.
+     */
+    const pendingPulse = new Map();
+
+    function pulseOf(clip) {
+      return pendingPulse.get(clip.id) ?? clip.pulse ?? { amount: 0 };
+    }
+
+    function currentPulse() {
+      const clip = selectedClip();
+      return clip ? pulseOf(clip) : { amount: 0 };
+    }
+
+    function pulseSummary(pulse) {
+      if (!pulse || pulse.amount === 0) return 'off';
+      return `${pulse.mode ?? PULSE_DEFAULT_MODE} · ${pulse.amount}`;
+    }
+
+    function buildPulsePanel() {
+      $('pulseAmount').max = String(PULSE_AMOUNT_MAX);
+      $('pulseAmountMax').textContent = String(PULSE_AMOUNT_MAX);
+      $('pulseMode').innerHTML = PULSE_MODES.map(mode => `<option value="${mode}">${mode}</option>`).join('');
+      $('pulseKnobs').innerHTML = PULSE_NUMBERS.map(({ key, label, min, max }) => `
+        <label class="pulse-row" data-knob="${key}">
+          <span>${escapeHtml(label)}</span>
+          <span class="range-wrap">
+            <input type="range" data-key="${key}" min="${min}" max="${max}" step="0.05">
+            <span class="range-ends"><span>${min}</span><span>${max}</span></span>
+          </span>
+          <output></output>
+        </label>`).join('');
+    }
+
+    function renderPulsePanel() {
+      const clip = selectedClip();
+      $('pulsePanel').hidden = !clip;
+      if (!clip) return;
+
+      const pulse = currentPulse();
+      $('pulseSummary').textContent = `— ${pulseSummary(pulse)}`;
+      $('pulseAmount').value = String(pulse.amount);
+      $('pulseAmountOut').textContent = pulse.amount.toFixed(2);
+      $('pulseMode').value = pulse.mode ?? PULSE_DEFAULT_MODE;
+      for (const { key, default: fallback } of PULSE_NUMBERS) {
+        const row = $('pulseKnobs').querySelector(`[data-knob="${key}"]`);
+        const value = pulse[key] ?? fallback;
+        row.querySelector('input').value = String(value);
+        row.querySelector('output').textContent = value.toFixed(2);
+        row.classList.toggle('changed', value !== fallback);
+      }
+    }
+
+    /**
+     * Apply a change to the selected scene's pulse: retune the preview now, save
+     * shortly after. Touching the mode or a knob while the pulse is off turns it
+     * on (at your last strength, else 1) — tuning a pulse you can't see is the
+     * one thing those controls can't usefully do.
+     */
+    function tweakPulse(changes) {
+      const clip = selectedClip();
+      if (!clip) return;
+      const next = { ...pulseOf(clip), ...changes };
+      if (next.amount === 0 && !('amount' in changes)) {
+        next.amount = lastPulse()?.amount || 1;
+      }
+      pendingPulse.set(clip.id, next);
+      renderPulsePanel();
+      postPulseToStage(next);
+      scheduleSave(clip.id);
+    }
+
+    /**
+     * Saves are debounced while a control moves and flushed when it is released.
+     * Not tied to `change` alone: that event is the only signal that would ever
+     * save, and a missed one used to leave the edit unsaved and then overwritten.
+     */
+    const PULSE_SAVE_DELAY_MS = 400;
+    const pulseSaveTimers = new Map();
+
+    function scheduleSave(clipId, delay = PULSE_SAVE_DELAY_MS) {
+      clearTimeout(pulseSaveTimers.get(clipId));
+      pulseSaveTimers.set(clipId, setTimeout(() => {
+        pulseSaveTimers.delete(clipId);
+        void savePulse(clipId);
+      }, delay));
+    }
+
+    async function savePulse(clipId) {
+      const pending = pendingPulse.get(clipId);
+      if (!pending) return;
+      const pulse = normalizePulse(pending);
+      writeStorage(LAST_PULSE_STORAGE, JSON.stringify(pulse));
+      const saved = await updateScene(clipId, { pulse });
+      // Only clear what was saved: a newer tweak made during the request stays
+      // pending and has its own save scheduled.
+      const stored = saved?.find(clip => clip.id === clipId)?.pulse;
+      if (stored && JSON.stringify(stored) === JSON.stringify(normalizePulse(pendingPulse.get(clipId) ?? {}))) {
+        pendingPulse.delete(clipId);
+      }
+      // On failure the edit stays pending (still previewed, still shown) and the
+      // status line says the save failed; the next tweak retries it.
+    }
+
+    function lastPulse() {
+      try {
+        const stored = JSON.parse(readStorage(LAST_PULSE_STORAGE) || 'null');
+        return stored && typeof stored.amount === 'number' ? stored : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+
 
     function fitStage() {
       const stage = $('stage');
@@ -1376,7 +1727,7 @@
       renderEditorShell(track, true);
 
       try {
-        const response = await api(`/admin/songs/${encodeURIComponent(filename)}/audio`);
+        const response = await fetch(`/api/tracks/${encodeURIComponent(filename)}/audio`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const bytes = await response.arrayBuffer();
         const buffer = await audioContext().decodeAudioData(bytes);
@@ -1426,7 +1777,10 @@
       const theme = state.current.track.theme ?? 'light';
       const startMs = Math.round(start * 1000);
       const endMs = Math.round(end * 1000);
-      const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme }]);
+      // Pulse settings carry over from the last scene you tuned, since a look is
+      // usually reused across a batch; tune it per scene from there.
+      const pulse = lastPulse();
+      const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme, ...(pulse ? { pulse } : {}) }]);
       if (!saved) return;
 
       const added = saved.find(clip => clip.startMs === startMs && clip.endMs === endMs);
@@ -1528,6 +1882,10 @@
 
       const sceneList = $('sceneList');
       sceneList.addEventListener('click', event => {
+        // The Recorded checkbox saves on `change`. Re-rendering the rows here (as
+        // selecting does) would swap it out mid-click and the change would never
+        // fire, so its clicks skip the select-and-seek below.
+        if (event.target.closest('.recorded-toggle')) return;
         const row = event.target.closest('.scene');
         if (!row) return;
         const id = row.dataset.id;
@@ -1589,6 +1947,11 @@
         if (!clip) return;
 
         const field = input.dataset.field;
+        if (field === 'recorded') {
+          void updateScene(clip.id, { recorded: input.checked || undefined });
+          return;
+        }
+
         if (field === 'label') {
           void updateScene(clip.id, { label: input.value.trim() || undefined });
           return;
@@ -1686,6 +2049,27 @@
     });
 
     $('exportBtn').addEventListener('click', exportScenes);
+
+    buildPulsePanel();
+    $('pulseAmount').addEventListener('input', event => tweakPulse({ amount: Number(event.target.value) }));
+    $('pulseMode').addEventListener('input', event => tweakPulse({ mode: event.target.value }));
+    $('pulseKnobs').addEventListener('input', event => {
+      const key = event.target.dataset.key;
+      if (key) tweakPulse({ [key]: Number(event.target.value) });
+    });
+    // `change` fires when a slider is released (or a select picks), which is
+    // when a tweak becomes a saved setting.
+    // Released a slider / picked an option: save now rather than after the delay.
+    $('pulsePanel').addEventListener('change', () => {
+      const clip = selectedClip();
+      if (clip && pendingPulse.has(clip.id)) scheduleSave(clip.id, 0);
+    });
+    $('pulseReset').addEventListener('click', () => {
+      const knobs = Object.fromEntries(PULSE_NUMBERS.map(({ key, default: value }) => [key, value]));
+      tweakPulse(knobs);
+      const clip = selectedClip();
+      if (clip) scheduleSave(clip.id, 0);
+    });
 
     $('siteUrl').value = siteUrl();
     $('siteUrl').addEventListener('change', event => {

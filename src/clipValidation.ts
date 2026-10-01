@@ -6,6 +6,7 @@
  * here narrows from `unknown` with real runtime checks — no type assertions.
  */
 
+import { validatePulse } from './scenePulse'
 import { type Clip, isTrackTheme, TRACK_THEMES } from './types'
 
 /** Guard rails so a bad client can't bloat tracks-meta.json. */
@@ -105,7 +106,7 @@ export function validateClips(
 			return { ok: false, error: `clips[${index}] must be an object` }
 		}
 
-		const { startMs, endMs, label, id, theme } = raw
+		const { startMs, endMs, label, id, theme, pulse, recorded } = raw
 
 		if (!isFiniteNumber(startMs) || startMs < 0) {
 			return { ok: false, error: `clips[${index}].startMs must be a finite number >= 0` }
@@ -137,6 +138,17 @@ export function validateClips(
 			return { ok: false, error: `clips[${index}].theme must be one of ${TRACK_THEMES.join(', ')}` }
 		}
 
+		let validPulse: Clip['pulse']
+		if (pulse !== undefined) {
+			const result = validatePulse(pulse)
+			if (!result.ok) return { ok: false, error: `clips[${index}].pulse ${result.error}` }
+			validPulse = result.pulse
+		}
+
+		if (recorded !== undefined && typeof recorded !== 'boolean') {
+			return { ok: false, error: `clips[${index}].recorded must be a boolean` }
+		}
+
 		if (id !== undefined && typeof id !== 'string') {
 			return { ok: false, error: `clips[${index}].id must be a string` }
 		}
@@ -157,6 +169,14 @@ export function validateClips(
 		}
 		if (theme !== undefined) {
 			clip.theme = theme
+		}
+		if (validPulse) {
+			clip.pulse = validPulse
+		}
+		// Only `true` is stored: unchecking drops the key, so scenes that were never
+		// marked and ones that were unmarked look the same on disk.
+		if (recorded === true) {
+			clip.recorded = true
 		}
 		clips.push(clip)
 	}

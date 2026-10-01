@@ -61,6 +61,8 @@ Each scene row has:
 - **Light / Dark** — the look of the page for this scene.
 - **▶ (or <kbd>P</kbd>)** plays the scene exactly as it will render: from start to
   end, with the 2s fade-out inside the end.
+- **Recorded**: tick it once the scene's video is done. Done scenes are dimmed, and a
+  batch render skips them. Nothing sets it automatically, including the recorder.
 - **⚠** when a scene runs past the end of the track. The render would come out short,
   so fix those.
 
@@ -87,6 +89,39 @@ The decoded timeline is **sample-identical to ffmpeg's**, which is what the reco
 cuts with. On `Novel.mp3`, both decode to 9,754,608 samples and put the same peak at
 the same sample.
 
+### Pulse
+
+Each scene can make the cover glow react to its music. Select a scene and use the
+**Pulse** panel under the stage preview:
+
+- **Strength** (`pulse`, 0–3). 0 is off, which is the default for a new scene unless
+  you've tuned one before. New scenes copy the last pulse you set, since one look
+  usually carries across a batch.
+- **Mode** (`pulseMode`): `bands`, `kick`, `transients`, `colour`, `breathe`, `orbit`
+  or `boombap`.
+- **Knobs:**
+  - Visual strengths: `pulseBass`, `pulseTreble`, `pulseKick`, `pulseSnare` and
+    `pulseShimmer` (0–4).
+  - Release smoothing: `pulseSmooth` (0.25–4).
+  - Drum-detector thresholds: `pulseKickShape` and `pulseSnareStrict` (1–6).
+  - Knobs moved off their default are highlighted, and **Reset knobs** puts them all
+    back.
+
+Moving a control retunes the preview live, without reloading it, and letting go saves
+the scene. Only settings that differ from the site's defaults are stored, and the scene
+row shows a `〰 mode · strength` chip.
+
+The pulse follows **the scene's own audio**, not the station. The pinned page decodes
+the source MP3 and plays it silently into the glow's analyser. In the editor it starts,
+pauses and seeks with the editor's own playback, so the preview pulses to what you
+hear. In a render it starts with the capture, so the glow follows the same samples
+that are muxed into the file.
+
+The names, ranges and defaults mirror the site's
+`src/lib/pulse-params.ts` in cieslak-dev. They are validated here
+in [src/scenePulse.ts](../src/scenePulse.ts), which rejects out-of-range values instead
+of letting the site clamp them, so a stored scene renders exactly as it previews.
+
 ### Themes: scene over track
 
 A scene's look resolves as `scene.theme ?? track.theme`. If neither is set, the page
@@ -111,20 +146,26 @@ them across restarts and playlist reordering.
 ## 2. Render
 
 ```bash
-bun run scripts/recordClips.ts                       # every scene
+bun run scripts/recordClips.ts                       # every scene not yet marked Recorded
 bun run scripts/recordClips.ts --track "Novel.mp3"   # one track's scenes
-bun run scripts/recordClips.ts --clip a1b2c3         # one scene
-bun run scripts/recordClips.ts --dry-run             # plan only (shows each theme)
+bun run scripts/recordClips.ts --clip a1b2c3         # one scene, even if marked Recorded
+bun run scripts/recordClips.ts --include-recorded    # re-render Recorded scenes too
+bun run scripts/recordClips.ts --dry-run             # plan only (shows theme and pulse)
 ```
 
 For each scene the script:
 
-1. Opens the site's radio page **pinned** to the scene's track and theme.
-2. Waits for the artwork **and** for `#radio-title` to show that track's title.
-3. Captures it for the scene's length with Chromium's screencast.
-4. Cuts the audio from `songs/<file>` with ffmpeg and muxes the two, with a 2s
+1. Opens the site's radio page **pinned** to the scene's track, theme and pulse.
+2. Waits for the artwork **and** for `#radio-title` to show that track's title. A
+   pulsing scene also waits for the page to decode the scene's audio.
+3. For a pulsing scene, starts that audio on the page 2s before the scene's start
+   (`PULSE_PREROLL_MS`), so the drum detectors are warmed up and the glow is already
+   moving at frame 0.
+4. Captures for the scene's length with Chromium's screencast.
+5. Cuts the audio from `songs/<file>` with ffmpeg and muxes the two, with a 2s
    fade-out on both streams.
 
+Every scene renders to its own file, so a track with three scenes gives three videos.
 Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-1080x1920.mp4`.
 
 Captures run in real time, so a 60s scene takes at least 60s plus setup and encode. A
@@ -135,14 +176,31 @@ wedge on the third.
 ### Pinned-track mode (cieslak-dev)
 
 ```
-/en/radio/?stage&drift=12&driftSpeed=3&track=Novel.mp3&theme=dark
+/en/radio/?stage&drift=12&driftSpeed=3&track=Novel.mp3&theme=dark&at=60000&pulse=0.5&pulseMode=boombap&pulseKick=0.65
 ```
 
-- `track=`: `radio-player.ts` fetches `/api/tracks` once and shows that file. It opens
-  neither `/stream` nor the now-playing SSE feed, and its play button is inert. What
-  is in frame therefore can't depend on the station, and a render never changes what
-  listeners hear. An unknown filename renders nothing and logs an error, so the
-  recorder's artwork wait fails loudly instead of filming another track.
+- `track=`: `radio-player.ts` fetches `/api/tracks` once and shows that file. It never
+  opens `/stream` or the now-playing SSE feed; every reconnect path goes through
+  `connect()`, which refuses in pinned mode. What is in frame therefore can't depend
+  on the station, and a render never changes what listeners hear. An unknown filename
+  renders nothing and logs an error, so the recorder's artwork wait fails loudly
+  instead of filming another track.
+- **Scene audio:** pinned mode decodes the track from `/api/tracks/:filename/audio` and
+  plays it through a zero-gain sink into the glow's analyser. It is decoded rather
+  than played through `<audio>` for the same reason as the editor: seeking a VBR MP3
+  element is only as precise as its coarse Xing table, so kicks would land off the
+  muxed audio. It is driven three ways:
+  - **The page's own play button** plays from `at=` (the scene's start, in ms).
+  - **The recorder** uses `window.__radioScene.play(atMs)`, after waiting for
+    `__radioScene.ready`.
+  - **The editor** posts `postMessage` messages to the iframe:
+    `radio-scene:play {atMs}`, `radio-scene:pause`, and `radio-scene:pulse {query}`
+    (pulse settings as a URL query string, applied live through the same parser the
+    URL uses). The page posts `radio-scene:ready` back once the audio is decoded.
+    Messages are only accepted from the parent frame.
+- `pulse=` and friends: see [Pulse](#pulse). A scene without a pulse gets an explicit
+  `pulse=0`, because without the param the site pulses at its default strength as
+  soon as audio flows.
 - `theme=`: applied before first paint by `BaseLayout`, and it overrides the track's
   own theme. It is written to `localStorage` on the site's origin, so it persists
   there; flip it back with the site's toggle.
@@ -178,6 +236,14 @@ copy.
   where `?stage` can't reach, so the harness hides it with an init script.
 - **Video needs a full Chromium.** `chromium_headless_shell` fails only at launch; the
   preflight checks for the right build without launching one.
+- **The GPU must be enabled** (`--enable-gpu`). Headless Chromium otherwise renders
+  with SwiftShader, which is software. On this machine the blurred 1080×1920 glow then
+  ran at ~17 fps without pulse and ~6 fps with it, so the glow stepped visibly and the
+  pulse landed late. With the GPU it holds 60 fps.
+- **Autoplay without a gesture** (`--autoplay-policy=no-user-gesture-required`), so a
+  pulsing scene's page can start its audio when the recorder asks.
+- **Sync:** measured from the screencast's capture timestamps against the page's
+  audio clock, each frame sits ~12 ms behind the muxed audio, under half a frame.
 - **Everything is bounded:** launch, capture (real time plus slack), the encoder exit,
   and every ffmpeg call. A wedged process fails its scene instead of stalling the
   batch.
@@ -215,11 +281,12 @@ matter.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /editor.html` | The scene editor |
-| `GET /admin/songs/:filename/audio` | The source MP3, for the editor to decode |
+| `GET /api/tracks/:filename/audio` | The source MP3, decoded by the editor and by pinned mode. **Public** (the site has no key), which is one more reason this branch must not be deployed |
 | `PUT /admin/tracks/:filename/clips` | `{ clips: Clip[] }`: replace a track's scenes wholesale |
 | `GET /admin/clips` | Every scene, keyed by filename |
 | `PATCH /admin/tracks/:filename/metadata` | `{ theme: "light" \| "dark" \| null }` — the track-level default, among other fields |
 | `GET /api/tracks` | Public playlist; what pinned mode and the recorder read titles/themes from |
 
 All `/admin` routes require `X-API-Key`. A `Clip` is `{ id, startMs, endMs, label?,
-theme? }`, validated in [src/clipValidation.ts](../src/clipValidation.ts).
+theme?, pulse?, recorded? }`, validated in [src/clipValidation.ts](../src/clipValidation.ts) and
+[src/scenePulse.ts](../src/scenePulse.ts).
