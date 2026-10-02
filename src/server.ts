@@ -14,6 +14,7 @@ import { normalizeInPlace } from './audioNormalizer'
 import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
+import { GLOW_FLAGS, GLOW_NUMBERS } from './sceneGlow'
 import { DEFAULT_SCENE_PULSE } from './scenePulse'
 import { StreamEngine } from './streamEngine'
 import { isTrackTheme, TRACK_THEMES } from './types'
@@ -605,7 +606,12 @@ app.put('/admin/tracks/:filename/clips', requireAuth, (req: Request, res: Respon
 app.get('/admin/clips', requireAuth, (_req: Request, res: Response) => {
 	// The default pulse rides along so the editor applies exactly what the
 	// recorder will, without keeping its own copy.
-	res.json({ clips: metadataManager.getAllClips(), defaultPulse: DEFAULT_SCENE_PULSE })
+	res.json({
+		clips: metadataManager.getAllClips(),
+		defaultPulse: DEFAULT_SCENE_PULSE,
+		// The editor builds its glow panel from these, so it can't drift from validation.
+		glowControls: { numbers: GLOW_NUMBERS, flags: GLOW_FLAGS },
+	})
 })
 
 /**

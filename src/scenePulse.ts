@@ -11,7 +11,16 @@
  * Pure, so the route and the recorder share one validator and one URL builder.
  */
 
-export const PULSE_MODES = ['bands', 'kick', 'transients', 'colour', 'breathe', 'orbit', 'boombap'] as const
+export const PULSE_MODES = [
+	'bands',
+	'kick',
+	'transients',
+	'colour',
+	'breathe',
+	'orbit',
+	'boombap',
+	'hands',
+] as const
 export type PulseMode = (typeof PULSE_MODES)[number]
 
 export function isPulseMode(value: unknown): value is PulseMode {

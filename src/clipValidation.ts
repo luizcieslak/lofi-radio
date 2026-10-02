@@ -6,6 +6,7 @@
  * here narrows from `unknown` with real runtime checks — no type assertions.
  */
 
+import { validateGlow } from './sceneGlow'
 import { validatePulse } from './scenePulse'
 import { type Clip, isTrackTheme, TRACK_THEMES } from './types'
 
@@ -106,7 +107,7 @@ export function validateClips(
 			return { ok: false, error: `clips[${index}] must be an object` }
 		}
 
-		const { startMs, endMs, label, id, theme, pulse, recorded } = raw
+		const { startMs, endMs, label, id, theme, pulse, glow, recorded } = raw
 
 		if (!isFiniteNumber(startMs) || startMs < 0) {
 			return { ok: false, error: `clips[${index}].startMs must be a finite number >= 0` }
@@ -145,6 +146,13 @@ export function validateClips(
 			validPulse = result.pulse
 		}
 
+		let validGlow: Clip['glow']
+		if (glow !== undefined) {
+			const result = validateGlow(glow)
+			if (!result.ok) return { ok: false, error: `clips[${index}].glow ${result.error}` }
+			validGlow = result.glow
+		}
+
 		if (recorded !== undefined && typeof recorded !== 'boolean') {
 			return { ok: false, error: `clips[${index}].recorded must be a boolean` }
 		}
@@ -172,6 +180,10 @@ export function validateClips(
 		}
 		if (validPulse) {
 			clip.pulse = validPulse
+		}
+		// An empty glow is /radio's look, the same as none.
+		if (validGlow && Object.keys(validGlow).length > 0) {
+			clip.glow = validGlow
 		}
 		// Only `true` is stored: unchecking drops the key, so scenes that were never
 		// marked and ones that were unmarked look the same on disk.

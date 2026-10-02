@@ -464,6 +464,8 @@
       width: 100%;
       max-width: 300px;
       aspect-ratio: 9 / 16;
+      /* The pane scrolls; without this a tall open panel squeezes the stage away. */
+      flex-shrink: 0;
       border-radius: 8px;
       overflow: hidden;
       position: relative;
@@ -498,7 +500,8 @@
       background: var(--bg-card);
     }
 
-    .pulse-row {
+    /* Scoped to beat `.preview label`'s flex, which would otherwise unalign the rows. */
+    .preview .pulse-row {
       display: grid;
       grid-template-columns: 84px minmax(0, 1fr) 40px;
       align-items: center;
@@ -554,10 +557,26 @@
       margin-bottom: 6px;
     }
 
-    #pulseKnobs {
+    #pulseKnobs,
+    #glowControls {
       display: flex;
       flex-direction: column;
       gap: 6px;
+    }
+
+    /* The sandbox's labels are long: a wider fixed column keeps the sliders aligned. */
+    .preview #glowControls .pulse-row {
+      grid-template-columns: 104px minmax(0, 1fr) 40px;
+      font-size: 12px;
+    }
+
+    .glow-flag input {
+      justify-self: start;
+      accent-color: var(--accent);
+    }
+
+    #glowUseDefault {
+      margin-top: 8px;
     }
 
     .pulse-chip {
@@ -692,6 +711,13 @@
         </details>
         <button id="pulseUseDefault" hidden title="Drop this scene's own pulse and follow the default">↺ Use default pulse</button>
       </div>
+      <div class="pulse-panel" id="glowPanel" hidden>
+        <details id="glowWrap">
+          <summary><span class="section-title" style="display: inline-flex;">Glow <span id="glowSummary" style="text-transform: none; letter-spacing: 0;"></span></span></summary>
+          <div id="glowControls"></div>
+          <button id="glowUseDefault" hidden title="Drop this scene's own look and use /radio's">↺ Use /radio look</button>
+        </details>
+      </div>
       <label><input type="checkbox" id="previewOn"> Live preview</label>
       <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
       <a id="previewOpen" href="#" target="_blank" rel="noopener" style="color: var(--text-dim);">Open in a tab ↗</a>
@@ -717,7 +743,7 @@
 
     // Mirrored from src/scenePulse.ts (the validated, tested copy), which mirrors
     // the site's src/lib/pulse-params.ts. Keep all three in step.
-    const PULSE_MODES = ['bands', 'kick', 'transients', 'colour', 'breathe', 'orbit', 'boombap'];
+    const PULSE_MODES = ['bands', 'kick', 'transients', 'colour', 'breathe', 'orbit', 'boombap', 'hands'];
     const PULSE_DEFAULT_MODE = 'bands';
     const PULSE_AMOUNT_MAX = 3;
     const PULSE_NUMBERS = [
@@ -1487,6 +1513,7 @@
               <button class="icon-btn" data-act="end-here" title="Set end to the playhead">⤓</button>
               <span class="dur mono">${seconds.toFixed(1)}s</span>
               ${pulseOf(clip).amount > 0 ? `<span class="pulse-chip" title="${inheritsPulse(clip) ? 'Default glow pulse' : 'Glow pulse (this scene)'}">〰 ${escapeHtml(pulseSummary(pulseOf(clip)))}${inheritsPulse(clip) ? ' · default' : ''}</span>` : ''}
+              ${glowSetting.inherits(clip) ? '' : `<span class="pulse-chip" title="Glow look (this scene): ${escapeHtml(glowQuery(glowSetting.of(clip)).toString() || 'same as /radio')}">◐ look</span>`}
               ${warnings.length ? `<span class="warn" title="${escapeHtml(warnings.join('; '))}">⚠</span>` : ''}
             </div>
             <div class="scene-row">
@@ -1517,6 +1544,7 @@
       // An explicit pulse=0 when the scene has none: without a `pulse` param the
       // site pulses at its default strength as soon as audio flows.
       for (const [key, value] of pulseQuery(clip ? pulseOf(clip) : defaultPulse)) params.set(key, value);
+      for (const [key, value] of glowQuery(clip ? glowSetting.of(clip) : undefined)) params.set(key, value);
       // `stage` is a bare flag; URLSearchParams would write it as `stage=`.
       return `${siteUrl()}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`;
     }
@@ -1538,7 +1566,18 @@
       postToStage({ type: 'radio-scene:pulse', query: pulseQuery(pulse ?? defaultPulse).toString() });
     }
 
-    /** The iframe only reloads when the track or theme changes; pulse and position are live. */
+    /** Like the pulse, every message carries the whole look: anything absent is /radio's. */
+    function postGlowToStage(glow) {
+      postToStage({ type: 'radio-scene:glow', query: glowQuery(glow).toString() });
+    }
+
+    function postSettingsToStage() {
+      const clip = selectedClip();
+      postPulseToStage(clip ? pulseOf(clip) : undefined);
+      postGlowToStage(clip ? glowSetting.of(clip) : undefined);
+    }
+
+    /** The iframe only reloads when the track, theme or scene changes; pulse, glow and position are live. */
     let stageKey = null;
 
     function updatePreview() {
@@ -1555,6 +1594,7 @@
       const url = stageUrl(state.current.filename, theme, clip);
       open.href = url;
       renderPulsePanel();
+      renderGlowPanel();
       meta.innerHTML = `${clip ? `Scene ${formatShort(clip.startMs / 1000)}–${formatShort(clip.endMs / 1000)}` : 'Track default'}
         · <strong>${theme || 'page default'}</strong>`;
 
@@ -1573,7 +1613,7 @@
         stageKey = key;
         frameEl.setAttribute('src', url);
       } else {
-        postPulseToStage(clip ? pulseOf(clip) : undefined);
+        postSettingsToStage();
       }
     }
 
@@ -1583,36 +1623,120 @@
     window.addEventListener('message', event => {
       if (event.source !== $('stageFrame').contentWindow) return;
       if (event.data?.type !== 'radio-scene:ready') return;
-      const clip = selectedClip();
-      postPulseToStage(clip ? pulseOf(clip) : undefined);
+      postSettingsToStage();
       if (player.playing) postToStage({ type: 'radio-scene:play', atMs: position() * 1000 });
     });
 
     // ========================================================================
-    // Pulse panel — edits the selected scene's pulse. Moving a control retunes
-    // the preview live; letting go saves the scene.
+    // Per-scene settings (pulse, glow) — edited from the panels below. Moving a
+    // control retunes the preview live; letting go saves the scene.
     // ========================================================================
     /**
-     * Pulse edits not yet confirmed by the server, by scene id. The panel and the
-     * preview always read through this, so a save that is slow — or fails — can
-     * never snap the scene back to its stored pulse (or to "off") mid-edit. An
-     * entry is dropped only once the server has saved exactly that value.
+     * One setting a scene can either own or inherit (`clip[field]`, else
+     * `fallback()`), with the edit/save/carry-over behaviour both panels share.
+     *
+     * - Edits not yet confirmed by the server are kept in `pending`, by scene id.
+     *   The panel and the preview always read through it, so a save that is slow
+     *   — or fails — can never snap the scene back mid-edit. An entry is dropped
+     *   only once the server has saved exactly that value.
+     * - Saves are debounced while a control moves and flushed when it is
+     *   released. Not tied to `change` alone: a missed one used to leave the edit
+     *   unsaved and then overwritten.
+     * - `live` is the value showing in the panel, carried from scene to scene
+     *   (see focusScene). Session-only on purpose: a reload starts from the
+     *   default, so no setting from days ago can quietly stamp scenes you merely
+     *   click.
      */
-    const pendingPulse = new Map();
+    const SETTING_SAVE_DELAY_MS = 400;
 
-    function pulseOf(clip) {
-      return pendingPulse.get(clip.id) ?? clip.pulse ?? defaultPulse;
+    function sceneSetting({ field, fallback, normalize, post, render }) {
+      const pending = new Map();
+      const timers = new Map();
+      const setting = {
+        live: null,
+        of: clip => pending.get(clip.id) ?? clip[field] ?? fallback(),
+        current() {
+          const clip = selectedClip();
+          return clip ? setting.of(clip) : fallback();
+        },
+        /** Whether a scene is on the default rather than a value of its own. */
+        inherits: clip => !pending.has(clip.id) && !clip[field],
+        isPending: clipId => pending.has(clipId),
+        /** Apply a new value to the selected scene: preview now, save shortly after. */
+        set(next) {
+          const clip = selectedClip();
+          if (!clip) return;
+          setting.live = next;
+          pending.set(clip.id, next);
+          render();
+          post(next);
+          setting.scheduleSave(clip.id);
+        },
+        scheduleSave(clipId, delay = SETTING_SAVE_DELAY_MS) {
+          clearTimeout(timers.get(clipId));
+          timers.set(clipId, setTimeout(() => {
+            timers.delete(clipId);
+            void save(clipId);
+          }, delay));
+        },
+        /** Drop the selected scene's own value so it follows the default again. */
+        useDefault() {
+          const clip = selectedClip();
+          if (!clip) return;
+          // Choosing the default ends the carry-over: scenes selected next show
+          // (and keep) the default again.
+          setting.live = null;
+          clearTimeout(timers.get(clip.id));
+          timers.delete(clip.id);
+          pending.delete(clip.id);
+          post(fallback());
+          void updateScene(clip.id, { [field]: undefined });
+        },
+        /**
+         * On selecting a scene: one with its own value makes that the live one;
+         * one on the default adopts the live value and saves it as its own, so the
+         * preview and the recorder agree. Scenes marked Recorded are never changed
+         * by a click: their video already exists.
+         */
+        adopt(clip) {
+          if (!setting.inherits(clip)) {
+            setting.live = setting.of(clip);
+          } else if (setting.live && !clip.recorded) {
+            pending.set(clip.id, structuredClone(setting.live));
+            setting.scheduleSave(clip.id, 0);
+          }
+        },
+      };
+
+      async function save(clipId) {
+        const value = pending.get(clipId);
+        if (!value) return;
+        const sent = normalize(value);
+        const saved = await updateScene(clipId, { [field]: sent });
+        // Only clear what was saved: a newer tweak made during the request stays
+        // pending and has its own save scheduled. On failure the edit stays pending
+        // (still previewed, still shown) and the status line says the save failed;
+        // the next tweak retries it.
+        const clip = saved?.find(c => c.id === clipId);
+        const latest = pending.get(clipId);
+        if (clip && latest && JSON.stringify(clip[field] ?? null) === JSON.stringify(normalize(latest) ?? null)) {
+          pending.delete(clipId);
+        }
+      }
+
+      return setting;
     }
 
-    function currentPulse() {
-      const clip = selectedClip();
-      return clip ? pulseOf(clip) : defaultPulse;
-    }
-
-    /** Whether a scene is on the default pulse rather than one of its own. */
-    function inheritsPulse(clip) {
-      return !pendingPulse.has(clip.id) && !clip.pulse;
-    }
+    // ── Pulse ────────────────────────────────────────────────────────────────
+    const pulseSetting = sceneSetting({
+      field: 'pulse',
+      fallback: () => defaultPulse,
+      normalize: normalizePulse,
+      post: pulse => postPulseToStage(pulse),
+      render: () => renderPulsePanel(),
+    });
+    const pulseOf = clip => pulseSetting.of(clip);
+    const inheritsPulse = clip => pulseSetting.inherits(clip);
 
     function pulseSummary(pulse) {
       if (!pulse || pulse.amount === 0) return 'off';
@@ -1639,7 +1763,7 @@
       $('pulsePanel').hidden = !clip;
       if (!clip) return;
 
-      const pulse = currentPulse();
+      const pulse = pulseSetting.current();
       const inherited = inheritsPulse(clip);
       $('pulseSummary').textContent = `— ${pulseSummary(pulse)}${inherited ? ' (default)' : ''}`;
       $('pulseUseDefault').hidden = inherited;
@@ -1656,11 +1780,10 @@
     }
 
     /**
-     * Apply a change to the selected scene's pulse: retune the preview now, save
-     * shortly after. The first tweak gives a scene its own pulse, starting from
-     * the default. Touching the mode or a knob while the pulse is off turns it
-     * on at the default strength — tuning a pulse you can't see is the one thing
-     * those controls can't usefully do.
+     * Apply a change to the selected scene's pulse. The first tweak gives a scene
+     * its own pulse, starting from the default. Touching the mode or a knob while
+     * the pulse is off turns it on at the default strength — tuning a pulse you
+     * can't see is the one thing those controls can't usefully do.
      */
     function tweakPulse(changes) {
       const clip = selectedClip();
@@ -1669,58 +1792,107 @@
       if (next.amount === 0 && !('amount' in changes)) {
         next.amount = defaultPulse.amount || 1;
       }
-      livePulse = next;
-      pendingPulse.set(clip.id, next);
-      renderPulsePanel();
-      postPulseToStage(next);
-      scheduleSave(clip.id);
+      pulseSetting.set(next);
     }
 
+    // ── Glow (the look: blur, blob sizes, colour extraction) ────────────────
     /**
-     * Saves are debounced while a control moves and flushed when it is released.
-     * Not tied to `change` alone: that event is the only signal that would ever
-     * save, and a missed one used to leave the edit unsaved and then overwritten.
+     * The glow controls, from the server (src/sceneGlow.ts, which mirrors the
+     * site's src/lib/glow-params.ts). Each `default` is /radio's own look, which
+     * is what a scene without a `glow` renders with.
      */
-    const PULSE_SAVE_DELAY_MS = 400;
-    const pulseSaveTimers = new Map();
+    let glowControls = { numbers: [], flags: [] };
 
-    function scheduleSave(clipId, delay = PULSE_SAVE_DELAY_MS) {
-      clearTimeout(pulseSaveTimers.get(clipId));
-      pulseSaveTimers.set(clipId, setTimeout(() => {
-        pulseSaveTimers.delete(clipId);
-        void savePulse(clipId);
-      }, delay));
+    function radioGlow() {
+      return Object.fromEntries([
+        ...glowControls.numbers.map(({ key, default: value }) => [key, value]),
+        ...glowControls.flags.map(({ key, default: value }) => [key, value]),
+      ]);
     }
 
-    async function savePulse(clipId) {
-      const pending = pendingPulse.get(clipId);
-      if (!pending) return;
-      const pulse = normalizePulse(pending);
-      const saved = await updateScene(clipId, { pulse });
-      // Only clear what was saved: a newer tweak made during the request stays
-      // pending and has its own save scheduled.
-      const stored = saved?.find(clip => clip.id === clipId)?.pulse;
-      if (stored && JSON.stringify(stored) === JSON.stringify(normalizePulse(pendingPulse.get(clipId) ?? {}))) {
-        pendingPulse.delete(clipId);
+    /** Only what differs from /radio's look; undefined when nothing does. */
+    function normalizeGlow(glow) {
+      const next = {};
+      for (const { key, default: fallback } of [...glowControls.numbers, ...glowControls.flags]) {
+        if (glow[key] !== undefined && glow[key] !== fallback) next[key] = glow[key];
       }
-      // On failure the edit stays pending (still previewed, still shown) and the
-      // status line says the save failed; the next tweak retries it.
+      return Object.keys(next).length > 0 ? next : undefined;
     }
 
-    /** Drop a scene's own pulse so it follows the default again. */
-    function useDefaultPulse() {
+    /** The site's `?glow*=` params, /radio's values omitted (glowQuery in src/sceneGlow.ts). */
+    function glowQuery(glow) {
+      const params = new URLSearchParams();
+      const changed = glow ? normalizeGlow(glow) : undefined;
+      for (const [key, value] of Object.entries(changed ?? {})) {
+        const name = `glow${key[0].toUpperCase()}${key.slice(1)}`;
+        params.set(name, typeof value === 'boolean' ? (value ? '1' : '0') : String(value));
+      }
+      return params;
+    }
+
+    const glowSetting = sceneSetting({
+      field: 'glow',
+      fallback: radioGlow,
+      normalize: normalizeGlow,
+      post: glow => postGlowToStage(glow),
+      render: () => renderGlowPanel(),
+    });
+
+    function glowChanges(glow) {
+      return Object.keys(normalizeGlow(glow) ?? {}).length;
+    }
+
+    function buildGlowPanel() {
+      const decimals = step => (String(step).split('.')[1] ?? '').length;
+      $('glowControls').innerHTML = [
+        ...glowControls.numbers.map(({ key, label, min, max, step }) => `
+          <label class="pulse-row" data-glow="${key}" data-decimals="${decimals(step)}">
+            <span>${escapeHtml(label)}</span>
+            <span class="range-wrap">
+              <input type="range" data-key="${key}" min="${min}" max="${max}" step="${step}">
+              <span class="range-ends"><span>${min}</span><span>${max}</span></span>
+            </span>
+            <output></output>
+          </label>`),
+        ...glowControls.flags.map(({ key, label }) => `
+          <label class="pulse-row glow-flag" data-glow="${key}">
+            <span>${escapeHtml(label)}</span>
+            <input type="checkbox" data-key="${key}">
+            <span></span>
+          </label>`),
+      ].join('');
+    }
+
+    function renderGlowPanel() {
+      const clip = selectedClip();
+      $('glowPanel').hidden = !clip;
+      if (!clip) return;
+
+      const glow = glowSetting.current();
+      const inherited = glowSetting.inherits(clip);
+      const count = glowChanges(glow);
+      $('glowSummary').textContent = `— ${count ? `${count} change${count === 1 ? '' : 's'}` : '/radio look'}${inherited ? ' (default)' : ''}`;
+      $('glowUseDefault').hidden = inherited;
+      const preset = radioGlow();
+      for (const row of $('glowControls').querySelectorAll('[data-glow]')) {
+        const key = row.dataset.glow;
+        const value = glow[key] ?? preset[key];
+        const input = row.querySelector('input');
+        if (input.type === 'checkbox') {
+          input.checked = value;
+        } else {
+          input.value = String(value);
+          row.querySelector('output').textContent = value.toFixed(Number(row.dataset.decimals));
+        }
+        row.classList.toggle('changed', value !== preset[key]);
+      }
+    }
+
+    function tweakGlow(changes) {
       const clip = selectedClip();
       if (!clip) return;
-      // Choosing the default ends the carry-over: scenes selected next show (and
-      // keep) the default again.
-      livePulse = null;
-      clearTimeout(pulseSaveTimers.get(clip.id));
-      pulseSaveTimers.delete(clip.id);
-      pendingPulse.delete(clip.id);
-      postPulseToStage(defaultPulse);
-      void updateScene(clip.id, { pulse: undefined });
+      glowSetting.set({ ...glowSetting.of(clip), ...changes });
     }
-
 
     function fitStage() {
       const stage = $('stage');
@@ -1811,32 +1983,17 @@
     }
 
     /**
-     * The pulse showing in the panel, carried from scene to scene. Without it,
-     * selecting another scene on the default replaced whatever you had just
-     * tuned with the default — so tuning a batch meant redoing it per scene.
-     * Session-only on purpose: a reload starts from the default, so no setting
-     * from days ago can quietly stamp scenes you merely click.
-     */
-    let livePulse = null;
-
-    /**
-     * Make `id` the selected scene, bringing the live pulse with it.
-     *
-     * A scene on the default adopts the live pulse and saves it as its own, so
-     * the preview and the recorder agree. A scene with its own pulse keeps it
-     * and that becomes the live pulse instead. Scenes marked Recorded are never
-     * changed by a click: their video already exists.
+     * Make `id` the selected scene, bringing the live pulse and glow with it (see
+     * sceneSetting's `adopt`). Without the carry-over, selecting another scene on
+     * the default replaced whatever you had just tuned with the default — so
+     * tuning a batch meant redoing it per scene.
      */
     function focusScene(id) {
       state.selectedClipId = id;
       const clip = selectedClip();
       if (!clip) return;
-      if (!inheritsPulse(clip)) {
-        livePulse = pulseOf(clip);
-      } else if (livePulse && !clip.recorded) {
-        pendingPulse.set(clip.id, { ...livePulse });
-        scheduleSave(clip.id, 0);
-      }
+      pulseSetting.adopt(clip);
+      glowSetting.adopt(clip);
     }
 
     function selectScene(id) {
@@ -2111,15 +2268,26 @@
     // Released a slider / picked an option: save now rather than after the delay.
     $('pulsePanel').addEventListener('change', () => {
       const clip = selectedClip();
-      if (clip && pendingPulse.has(clip.id)) scheduleSave(clip.id, 0);
+      if (clip && pulseSetting.isPending(clip.id)) pulseSetting.scheduleSave(clip.id, 0);
     });
-    $('pulseUseDefault').addEventListener('click', useDefaultPulse);
+    $('pulseUseDefault').addEventListener('click', () => pulseSetting.useDefault());
     $('pulseReset').addEventListener('click', () => {
       const knobs = Object.fromEntries(PULSE_NUMBERS.map(({ key, default: value }) => [key, value]));
       tweakPulse(knobs);
       const clip = selectedClip();
-      if (clip) scheduleSave(clip.id, 0);
+      if (clip) pulseSetting.scheduleSave(clip.id, 0);
     });
+
+    $('glowControls').addEventListener('input', event => {
+      const { key } = event.target.dataset;
+      if (!key) return;
+      tweakGlow({ [key]: event.target.type === 'checkbox' ? event.target.checked : Number(event.target.value) });
+    });
+    $('glowPanel').addEventListener('change', () => {
+      const clip = selectedClip();
+      if (clip && glowSetting.isPending(clip.id)) glowSetting.scheduleSave(clip.id, 0);
+    });
+    $('glowUseDefault').addEventListener('click', () => glowSetting.useDefault());
 
     $('siteUrl').value = siteUrl();
     $('siteUrl').addEventListener('change', event => {
@@ -2167,8 +2335,10 @@
         const [tracksResponse, clipsResponse] = await Promise.all([fetch('/api/tracks'), api('/admin/clips')]);
         if (!tracksResponse.ok || !clipsResponse.ok) throw new Error('could not load tracks or scenes');
         const { tracks } = await tracksResponse.json();
-        const { clips, defaultPulse: serverDefault } = await clipsResponse.json();
+        const { clips, defaultPulse: serverDefault, glowControls: serverGlow } = await clipsResponse.json();
         if (serverDefault && typeof serverDefault.amount === 'number') defaultPulse = serverDefault;
+        if (serverGlow?.numbers && serverGlow?.flags) glowControls = serverGlow;
+        buildGlowPanel();
         state.tracks = tracks.map(track => ({ ...track, filename: filenameOf(track) }));
         state.clips = clips;
       } catch (error) {

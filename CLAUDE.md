@@ -172,7 +172,7 @@ REST API and web server with endpoints:
 - `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's scenes (wholesale)
 - `GET /admin/clips` — all scenes keyed by filename (JSON export + pool badges)
 
-**Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`, `pulse?`, `recorded?`) is a
+**Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`, `pulse?`, `glow?`, `recorded?`) is a
 slice of a song to turn into a ~1min promo video, plus the look of the page while it is
 filmed: light/dark, and how the cover glow pulses to the music. They are marked in the editor, which **plays source files locally**: it fetches
 the MP3 once, decodes it with Web Audio and plays from memory, so the playhead is
@@ -199,6 +199,13 @@ marks landed seconds off. That machinery is gone.
   own audio silently into the glow's analyser, so the pulse follows the muxed audio.
   The editor drives it live over `postMessage`, and the recorder through
   `window.__radioScene`.
+- **Glow:** `glow` (`SceneGlow` in [src/sceneGlow.ts](src/sceneGlow.ts)) is the
+  glow's look, using the controls of cieslak-dev's glow sandbox. It mirrors that repo's
+  `glow-params.ts` (`?glowBlur=`…). A scene stores only what differs from /radio's look,
+  and absent means /radio's look. `GET /admin/clips` sends the control specs as
+  `glowControls`, so the editor panel and validation share one copy. The editor
+  restyles the preview live (`radio-scene:glow`). Like the pulse, the panel's value
+  carries over to scenes on the default.
 - **Recorded:** `recorded` is ticked by hand in the editor once a scene's video is
   done. It is stored only when true, never set automatically, and batch renders skip
   it (`--clip` or `--include-recorded` override). Each scene renders to its own file.
@@ -209,8 +216,8 @@ marks landed seconds off. That machinery is gone.
 **Batch rendering.** [scripts/recordClips.ts](scripts/recordClips.ts) turns every scene
 into a 1080x1920 MP4 unattended. For each scene it:
 
-1. Opens the `cieslak-dev` radio page **pinned** to the scene's track, theme and pulse
-   (`?stage&track=<file>&theme=<t>&at=<ms>&pulse=…`; the site then ignores the live
+1. Opens the `cieslak-dev` radio page **pinned** to the scene's track, theme, pulse and glow
+   (`?stage&track=<file>&theme=<t>&at=<ms>&pulse=…&glow…=`; the site then ignores the live
    station entirely).
 2. Waits for the artwork and the expected `#radio-title`, plus the decoded scene audio
    if it pulses.

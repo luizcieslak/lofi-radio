@@ -47,6 +47,7 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { glowQuery } from '../src/sceneGlow'
 import { pulseQuery, resolveScenePulse, type ScenePulse } from '../src/scenePulse'
 import { type Clip, isTrackTheme, type TrackTheme } from '../src/types'
 
@@ -426,6 +427,8 @@ function stagePageUrl(job: RenderJob): string {
 	// Always explicit, `pulse=0` included: without a `pulse` param the site would
 	// pulse at its own default strength as soon as audio flows.
 	for (const [key, value] of pulseQuery(job.pulse)) params.set(key, value)
+	// Only what differs from /radio's own look (see src/sceneGlow.ts).
+	for (const [key, value] of glowQuery(job.clip.glow)) params.set(key, value)
 	// `stage` is a bare flag; URLSearchParams would write it as `stage=`.
 	return `${SITE_URL}/en/radio/?${params.toString().replace(/(^|&)stage=(&|$)/, '$1stage$2')}`
 }
@@ -1061,8 +1064,10 @@ async function main(): Promise<void> {
 		const theme = job.theme ?? 'default'
 		const source = job.clip.pulse ? '' : ' (default)'
 		const pulse = pulses(job) ? ` pulse ${job.pulse.mode ?? 'bands'}@${job.pulse.amount}${source}` : ''
+		const glow = glowQuery(job.clip.glow).toString()
+		const look = glow ? ` ${glow}` : ''
 		console.log(
-			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme}${pulse} -> ${job.outputPath}`,
+			`  ${job.filename} [${job.clip.id}]${label} ${job.durationSeconds.toFixed(1)}s ${theme}${pulse}${look} -> ${job.outputPath}`,
 		)
 	}
 	/**

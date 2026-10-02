@@ -120,8 +120,8 @@ scenes later. A scene's own pulse always wins, including strength 0
 (explicitly off).
 
 - **Strength** (`pulse`, 0–3). 0 is off.
-- **Mode** (`pulseMode`): `bands`, `kick`, `transients`, `colour`, `breathe`, `orbit`
-  or `boombap`.
+- **Mode** (`pulseMode`): `bands`, `kick`, `transients`, `colour`, `breathe`, `orbit`,
+  `boombap` or `hands`.
 - **Knobs:**
   - Visual strengths: `pulseBass`, `pulseTreble`, `pulseKick`, `pulseSnare` and
     `pulseShimmer` (0–4).
@@ -144,6 +144,33 @@ The names, ranges and defaults mirror the site's
 `src/lib/pulse-params.ts` in cieslak-dev. They are validated here
 in [src/scenePulse.ts](../src/scenePulse.ts), which rejects out-of-range values instead
 of letting the site clamp them, so a stored scene renders exactly as it previews.
+
+### Glow
+
+The **Glow** panel (collapsed under the Pulse panel) sets the glow's *look*. It has
+the same controls as the blog's glow sandbox (`AmbientGlowSandbox.astro`): blur, size
+multiplier, blob count, radius, opacity and feather, grid and colour-bin size, jitter,
+stretch, edge bleed, side blooms, and the black, white and transparent pixel skips.
+The sandbox's `fadeMs` is left out, because it only times the crossfade when the cover
+changes, and a pinned recording never changes it.
+
+- **Default:** a scene with no `glow` renders with /radio's own look, its
+  `RADIO_GLOW_PRESET`. The sliders start there, and settings that differ are
+  highlighted.
+- **Storage:** a scene stores only the settings that differ from that look. The row
+  shows a `◐ look` chip, and **↺ Use /radio look** drops the scene's own look again.
+- **Live editing:** it behaves like the pulse. Moving a control restyles the preview
+  without reloading it, and letting go saves the scene.
+- **Carry-over:** the panel's look also carries over to scenes on the default. The
+  rules are the same as for the pulse, Recorded scenes included.
+- **On the site:** each setting is the `GlowOptions` key with a `glow` prefix:
+  `glowBlur=80`, `glowGridSize=6`, `glowSkipBlack=0` (flags are 1/0). The prefix keeps
+  them clear of the page's other params.
+- **Validation:** ranges and whole-number rules live in
+  [src/sceneGlow.ts](../src/sceneGlow.ts), which mirrors cieslak-dev's
+  `src/lib/glow-params.ts`. `GET /admin/clips` sends them to the editor as
+  `glowControls`, so the panel can't drift from validation. Out-of-range values are
+  rejected, not clamped.
 
 ### Themes: scene over track
 
@@ -217,13 +244,16 @@ wedge on the third.
   - **The recorder** uses `window.__radioScene.play(atMs)`, after waiting for
     `__radioScene.ready`.
   - **The editor** posts `postMessage` messages to the iframe:
-    `radio-scene:play {atMs}`, `radio-scene:pause`, and `radio-scene:pulse {query}`
-    (pulse settings as a URL query string, applied live through the same parser the
-    URL uses). The page posts `radio-scene:ready` back once the audio is decoded.
+    `radio-scene:play {atMs}`, `radio-scene:pause`, `radio-scene:pulse {query}` and
+    `radio-scene:glow {query}`. The last two carry the settings as a URL query
+    string and are applied live through the same parser the URL uses. Anything
+    absent from a message reverts to its default. The page posts `radio-scene:ready` back once the audio is decoded.
     Messages are only accepted from the parent frame.
-- `pulse=` and friends: see [Pulse](#pulse). A scene without a pulse gets an explicit
-  `pulse=0`, because without the param the site pulses at its default strength as
-  soon as audio flows.
+- `pulse=` and friends: see [Pulse](#pulse). The URL always carries the scene's
+  resolved pulse (its own, or the default), `pulse=0` included, because without the
+  param the site pulses at its own default strength as soon as audio flows.
+- `glow*=`: see [Glow](#glow). These are applied over /radio's look; absent means
+  /radio's value.
 - `theme=`: applied before first paint by `BaseLayout`, and it overrides the track's
   own theme. It is written to `localStorage` on the site's origin, so it persists
   there; flip it back with the site's toggle.

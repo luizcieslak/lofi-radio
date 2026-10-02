@@ -1,3 +1,4 @@
+import type { SceneGlow } from './sceneGlow'
 import type { ScenePulse } from './scenePulse'
 
 export interface Mp3FrameHeader {
@@ -54,8 +55,10 @@ export interface Clip {
 	 * clip without one inherits the track's; absent on both = the page's default.
 	 */
 	theme?: TrackTheme
-	/** How the cover glow reacts to the music in this scene's video; absent = no pulse. */
+	/** How the cover glow reacts to the music in this scene's video; absent = the default pulse (DEFAULT_SCENE_PULSE). */
 	pulse?: ScenePulse
+	/** The glow's look (blur, blob sizes…) where it differs from /radio's; absent = /radio's. */
+	glow?: SceneGlow
 	/**
 	 * Ticked by hand in the editor once this scene's video is done. Stored only
 	 * when true; the recorder never sets it, and skips such scenes in a batch.
