@@ -1669,6 +1669,7 @@
       if (next.amount === 0 && !('amount' in changes)) {
         next.amount = defaultPulse.amount || 1;
       }
+      livePulse = next;
       pendingPulse.set(clip.id, next);
       renderPulsePanel();
       postPulseToStage(next);
@@ -1710,6 +1711,9 @@
     function useDefaultPulse() {
       const clip = selectedClip();
       if (!clip) return;
+      // Choosing the default ends the carry-over: scenes selected next show (and
+      // keep) the default again.
+      livePulse = null;
       clearTimeout(pulseSaveTimers.get(clip.id));
       pulseSaveTimers.delete(clip.id);
       pendingPulse.delete(clip.id);
@@ -1793,19 +1797,50 @@
       const theme = state.current.track.theme ?? 'light';
       const startMs = Math.round(start * 1000);
       const endMs = Math.round(end * 1000);
-      // No pulse of its own: a new scene follows the default until you tune it.
+      // No pulse of its own yet: selecting it below hands it the live pulse, if
+      // you've set one this session; otherwise it follows the default.
       const saved = await mutateClips(clips => [...clips, { startMs, endMs, theme }]);
       if (!saved) return;
 
       const added = saved.find(clip => clip.startMs === startMs && clip.endMs === endMs);
-      state.selectedClipId = added?.id ?? null;
+      state.selectedClipId = null;
+      if (added) focusScene(added.id);
       clearSelection();
       renderScenes();
       updatePreview();
     }
 
-    function selectScene(id) {
+    /**
+     * The pulse showing in the panel, carried from scene to scene. Without it,
+     * selecting another scene on the default replaced whatever you had just
+     * tuned with the default — so tuning a batch meant redoing it per scene.
+     * Session-only on purpose: a reload starts from the default, so no setting
+     * from days ago can quietly stamp scenes you merely click.
+     */
+    let livePulse = null;
+
+    /**
+     * Make `id` the selected scene, bringing the live pulse with it.
+     *
+     * A scene on the default adopts the live pulse and saves it as its own, so
+     * the preview and the recorder agree. A scene with its own pulse keeps it
+     * and that becomes the live pulse instead. Scenes marked Recorded are never
+     * changed by a click: their video already exists.
+     */
+    function focusScene(id) {
       state.selectedClipId = id;
+      const clip = selectedClip();
+      if (!clip) return;
+      if (!inheritsPulse(clip)) {
+        livePulse = pulseOf(clip);
+      } else if (livePulse && !clip.recorded) {
+        pendingPulse.set(clip.id, { ...livePulse });
+        scheduleSave(clip.id, 0);
+      }
+    }
+
+    function selectScene(id) {
+      focusScene(id);
       renderScenes();
       invalidateWaveform();
       updatePreview();
@@ -1941,7 +1976,7 @@
             break;
           }
           case 'theme':
-            state.selectedClipId = id;
+            focusScene(id);
             void updateScene(id, { theme: button.dataset.theme });
             break;
           case 'delete':

@@ -108,7 +108,15 @@ recorder's dry run prints `(default)`.
 
 To tune a scene, select it and use the **Pulse** panel under the stage preview. The
 first change gives the scene its own pulse, starting from the default, and **↺ Use
-default pulse** drops it again. A scene's own pulse always wins, including strength 0
+default pulse** drops it again.
+
+**The panel's settings carry over.** Whatever pulse the panel shows (one you just
+tuned, or a scene's own) becomes the *live* pulse. Selecting or adding a scene that's
+on the default gives it the live pulse and saves it, so tuning a batch is done once.
+A scene with its own pulse keeps it, and that pulse becomes the live one. Scenes
+marked **Recorded** are never changed by a click. **↺ Use default pulse** ends the
+carry-over, and so does reloading the editor, so an old setting can't silently stamp
+scenes later. A scene's own pulse always wins, including strength 0
 (explicitly off).
 
 - **Strength** (`pulse`, 0–3). 0 is off.
@@ -283,8 +291,18 @@ response, e.g. a Cloudflare *Transform Rule → Modify Response Header* on
   pulse landed late. With the GPU it holds 60 fps.
 - **Autoplay without a gesture** (`--autoplay-policy=no-user-gesture-required`), so a
   pulsing scene's page can start its audio when the recorder asks.
-- **Sync:** measured from the screencast's capture timestamps against the page's
-  audio clock, each frame sits ~12 ms behind the muxed audio, under half a frame.
+- **Sync:** the glow needs time to react to a hit. The analyser's 2048-sample
+  window has to take it in, the page paints it on its next frame, and the screencast
+  grabs it about a frame later. Measured on rendered files with a synthetic kick
+  track (a hit every 0.75s), the glow first moved **~67 ms after each kick** in
+  every beat-driven mode. That's past the ~45 ms at which picture-behind-sound reads
+  as lag. The recorder therefore runs the page's audio `PULSE_LEAD_MS` (67 ms) ahead
+  of the frame clock, and after that the glow moves on the kick's own frame (bands
+  peaks one frame later). The muxed audio is unaffected and sits on the source's
+  timeline. `breathe` is a deliberate slow swell and not beat-aligned.
+  Re-measure if the analyser, the glow or the frame rate changes: generate a kick
+  track with ffmpeg (`aevalsrc`, a decaying 55 Hz sine every 0.75 s), give it a scene,
+  render it, and compare per-frame glow brightness with the kick times.
 - **Everything is bounded:** launch, capture (real time plus slack), the encoder exit,
   and every ffmpeg call. A wedged process fails its scene instead of stalling the
   batch.

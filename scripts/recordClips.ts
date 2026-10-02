@@ -173,6 +173,20 @@ const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage'
  */
 const PULSE_PREROLL_MS = 2000
 
+/**
+ * How far the page's scene audio runs AHEAD of the frame clock, so the glow's
+ * reaction to a hit lands on the frame where the hit is heard.
+ *
+ * The glow can't react instantly: the analyser's 2048-sample window has to take
+ * the hit in, the page paints it on its next frame, and the screencast grabs it
+ * a frame later. Measured end to end on rendered files with a synthetic kick
+ * track (a hit every 0.75s): without a lead, the glow first moved ~67ms after
+ * each kick in every beat-driven mode (bands, kick, transients, colour, orbit,
+ * boombap) — well past the ~45ms where picture-behind-sound reads as lag.
+ * `breathe` is a deliberate slow swell and not meant to hit on the beat.
+ */
+const PULSE_LEAD_MS = 67
+
 /** Ceiling on the pinned page decoding the scene's audio for the pulse. */
 const SCENE_AUDIO_TIMEOUT_MS = 30_000
 
@@ -612,13 +626,15 @@ async function captureVideo(outDir: string, seconds: number, job: RenderJob): Pr
 			 * Start the scene's audio on the page so the glow pulses to it — the same
 			 * slice that gets muxed in below, played silently into the analyser. It
 			 * starts a pre-roll early so the detectors are warm by frame 0, and the
-			 * frame clock starts when the scene's own start is reached.
+			 * frame clock starts once the page's audio is PULSE_LEAD_MS past the
+			 * scene's start, so the glow's reaction lines up with the muxed audio.
 			 */
 			if (pulses(job)) {
 				phase = 'starting the scene audio'
-				const prerollMs = Math.min(PULSE_PREROLL_MS, job.clip.startMs)
-				await page.evaluate(atMs => window.__radioScene?.play(atMs), job.clip.startMs - prerollMs)
-				await new Promise(resolve => setTimeout(resolve, prerollMs))
+				const leadAtMs = job.clip.startMs + PULSE_LEAD_MS
+				const fromMs = Math.max(0, leadAtMs - PULSE_PREROLL_MS)
+				await page.evaluate(atMs => window.__radioScene?.play(atMs), fromMs)
+				await new Promise(resolve => setTimeout(resolve, leadAtMs - fromMs))
 			}
 
 			phase = `holding for the ${seconds.toFixed(0)}s capture`

@@ -214,7 +214,9 @@ into a 1080x1920 MP4 unattended. For each scene it:
    station entirely).
 2. Waits for the artwork and the expected `#radio-title`, plus the decoded scene audio
    if it pulses.
-3. Starts that audio on the page with a 2s pre-roll.
+3. Starts that audio on the page with a 2s pre-roll, running `PULSE_LEAD_MS` (67 ms)
+   ahead of the frame clock. That's the glow's measured reaction time; without it,
+   kicks showed in the video ~2 frames after they were heard.
 4. Captures with Chromium's screencast. Chromium is launched with `--enable-gpu`;
    software rendering ran the glow at ~6 fps.
 5. Cuts the audio from the source MP3 and muxes.
