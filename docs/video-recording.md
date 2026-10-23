@@ -41,7 +41,12 @@ Then open <http://localhost:5634/editor.html> (or 🔐 → **🎬 Scenes** on th
 
 ## 1. Mark scenes in the editor
 
-Pick a track from the pool on the left. The editor downloads the source MP3 once,
+Pick a track from the pool on the left. Under the search box, chips narrow the pool by
+scene status: **To record** (at least one scene not yet recorded), **No scenes** and
+**Recorded** (every scene done). The editor remembers your choice. The badge on a track
+counts its scenes, and turns into a dimmed ✓ once they're all recorded.
+
+The editor downloads the source MP3 once,
 decodes it in the browser, and plays it from memory:
 
 - **Whole-track waveform:** click to seek, drag to select a range. Existing scenes are
@@ -60,7 +65,7 @@ Each scene row has:
   playhead.
 - **Light / Dark** — the look of the page for this scene.
 - **▶ (or <kbd>P</kbd>)** plays the scene exactly as it will render: from start to
-  end, with the 2s fade-out inside the end.
+  end, with the 0.5s fade-in and the 2s fade-out inside its ends.
 - **Recorded**: tick it once the scene's video is done. Done scenes are dimmed, and a
   batch render skips them. Nothing sets it automatically, including the recorder.
 - **⚠** when a scene runs past the end of the track. The render would come out short,
@@ -106,9 +111,11 @@ constant restyles all of them at once. The server sends it with the scene list
 the recorder always agree. Inheriting scenes show `· default` on their chip, and the
 recorder's dry run prints `(default)`.
 
-To tune a scene, select it and use the **Pulse** panel under the stage preview. The
-first change gives the scene its own pulse, starting from the default, and **↺ Use
-default pulse** drops it again.
+To tune a scene, select it and use the **Pulse** panel next to the stage preview. On
+screens 1500px and wider, the settings get their own scrolling column beside the stage,
+so the preview stays in view while you tune. Narrower screens stack the settings under
+the preview. The first change gives the scene its own pulse, starting from the
+default, and **↺ Use default pulse** drops it again.
 
 **The panel's settings carry over.** Whatever pulse the panel shows (one you just
 tuned, or a scene's own) becomes the *live* pulse. Selecting or adding a scene that's
@@ -147,7 +154,7 @@ of letting the site clamp them, so a stored scene renders exactly as it previews
 
 ### Glow
 
-The **Glow** panel (collapsed under the Pulse panel) sets the glow's *look*. It has
+The **Glow** panel (below the Pulse panel) sets the glow's *look*. It has
 the same controls as the blog's glow sandbox (`AmbientGlowSandbox.astro`): blur, size
 multiplier, blob count, radius, opacity and feather, grid and colour-bin size, jitter,
 stretch, edge bleed, side blooms, and the black, white and transparent pixel skips.
@@ -212,11 +219,20 @@ For each scene the script:
    (`PULSE_PREROLL_MS`), so the drum detectors are warmed up and the glow is already
    moving at frame 0.
 4. Captures for the scene's length with Chromium's screencast.
-5. Cuts the audio from `songs/<file>` with ffmpeg and muxes the two, with a 2s
-   fade-out on both streams.
+5. Cuts the audio from `songs/<file>` with ffmpeg and muxes the two. The audio
+   gets a 0.5s fade-in from silence (`FADE_IN_SECONDS`), which softens the cut
+   without burying the first beat, and a 2s fade-out (`FADE_OUT_SECONDS`). The
+   picture is not faded. Both fades run inside the marked range, so the video still
+   lasts exactly as long as the scene. On a very short scene, each fade is capped at
+   half its length.
 
 Every scene renders to its own file, so a track with three scenes gives three videos.
 Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-1080x1920.mp4`.
+
+To clear the folder before a new batch, run `bun run scripts/archiveRecordings.ts`
+(`--dry-run` to preview). Nothing is deleted. Everything at the top level moves to
+`recordings/backup/<YYYY-MM-DDTHH-MM-SS>/`, a fresh folder per run.
+It leaves `backup/` and the `.work-*` render dirs alone.
 
 Captures run in real time, so a 60s scene takes at least 60s plus setup and encode. A
 failed scene is reported and the batch continues. Each multi-scene batch renders every

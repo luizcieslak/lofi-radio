@@ -288,6 +288,7 @@ lofi-radio/
 ├── scripts/
 │   ├── generatePlaylist.ts # Utility to generate playlist from files
 │   ├── recordClips.ts      # Batch promo-video renderer (campaign branch)
+│   ├── archiveRecordings.ts # Moves recordings/ into recordings/backup/<timestamp>/ (campaign branch)
 │   └── upload-songs.sh     # Bulk-upload helper against /admin/upload/batch
 ├── docs/                   # Project notes / design docs
 │   ├── video-recording.md  # Promo-video workflow (campaign branch)

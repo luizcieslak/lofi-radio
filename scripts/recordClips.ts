@@ -15,7 +15,7 @@
  *
  *   Playwright  -> silent video, exact duration, vertical framing
  *   ffmpeg -ss  -> lossless audio slice from songs/*.mp3
- *   ffmpeg mux  -> the clip, with a fade-out on both streams
+ *   ffmpeg mux  -> the clip, with the audio faded in and out (the picture is not)
  *
  * Usage:
  *   bun run scripts/recordClips.ts                       # every scene not yet marked recorded
@@ -72,14 +72,21 @@ const HEIGHT = 1920
 const FPS = 30
 
 /**
- * Length of the fade-to-black / fade-to-silence at the end of every clip.
+ * Length of the audio fade-to-silence at the end of every clip.
  *
- * The fade runs INSIDE the marked slice — it starts `FADE_SECONDS` before the
+ * The fade runs INSIDE the marked slice — it starts `FADE_OUT_SECONDS` before the
  * clip's `endMs` — so the clip still ends exactly where it was marked rather than
  * running past it. A clip shorter than the fade gets a proportionally shorter one
- * (see `fadeStart`), since a 2s fade on a 1.5s clip would start before it begins.
+ * (see `fadeOutStart`), since a 2s fade on a 1.5s clip would start before it begins.
  */
-const FADE_SECONDS = 2
+const FADE_OUT_SECONDS = 2
+
+/**
+ * Length of the audio fade-from-silence at the start of every clip.
+ * Kept short so the first beat still lands; it only softens the hard cut in.
+ * Like the fade-out it runs inside the slice, capped at half a very short clip.
+ */
+const FADE_IN_SECONDS = 0.5
 
 /**
  * Rough per-clip overhead for the time estimate: browser launch, navigation,
@@ -759,18 +766,20 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 	}
 
 	/**
-	 * Fade out the last seconds of both streams.
+	 * Fade the audio in over the first half second and out over the last seconds.
+	 * The picture is not faded: it opens and closes on the full frame.
 	 *
-	 * Timestamps are relative to the TRIMMED output, not the source files: `-ss`
-	 * on the video input and `-ss` on the audio cut both reset the clock to zero,
-	 * so the fade starts at `durationSeconds - fade` in filter time.
+	 * Timestamps are relative to the TRIMMED output, not the source file: the `-ss`
+	 * on the audio cut resets the clock to zero, so the fade-in starts at 0 and the
+	 * fade-out at `durationSeconds - fadeOut` in filter time. Each is capped at half
+	 * the clip, so they never overlap.
 	 *
-	 * `afade` needs an explicit duration (`d`) rather than inheriting one, and
-	 * `fade=t=out` needs `st`+`d` for the same reason.
+	 * `afade` needs an explicit duration (`d`) rather than inheriting one.
 	 */
 	step('encoding')
-	const fade = Math.min(FADE_SECONDS, durationSeconds / 2)
-	const fadeStart = durationSeconds - fade
+	const fadeIn = Math.min(FADE_IN_SECONDS, durationSeconds / 2)
+	const fadeOut = Math.min(FADE_OUT_SECONDS, durationSeconds / 2)
+	const fadeOutStart = durationSeconds - fadeOut
 
 	/**
 	 * Tolerate an encode that finishes its file but never reports exit.
@@ -794,10 +803,8 @@ async function renderClip(job: RenderJob, workDir: string, step: (message: strin
 		'0:v',
 		'-map',
 		'1:a',
-		'-vf',
-		`fade=t=out:st=${fadeStart}:d=${fade}`,
 		'-af',
-		`afade=t=out:st=${fadeStart}:d=${fade}`,
+		`afade=t=in:st=0:d=${fadeIn},afade=t=out:st=${fadeOutStart}:d=${fadeOut}`,
 		'-c:v',
 		'libx264',
 		'-preset',

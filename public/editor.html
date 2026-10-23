@@ -168,6 +168,32 @@
       margin: 0 16px;
     }
 
+    /* Scene-status filter: one chip per bucket, each with its track count. */
+    .status-filter {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin: 0 16px;
+    }
+
+    .status-filter button {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 10px;
+      color: var(--text-dim);
+    }
+
+    .status-filter button.on {
+      background: rgba(102, 126, 234, 0.35);
+      color: #fff;
+    }
+
+    .status-filter .n {
+      margin-left: 4px;
+      opacity: 0.7;
+      font-variant-numeric: tabular-nums;
+    }
+
     #trackList {
       max-height: 300px;
       overflow-y: auto;
@@ -222,6 +248,12 @@
       background: rgba(74, 222, 128, 0.2);
       color: var(--ok);
       flex-shrink: 0;
+    }
+
+    /* Every scene of the track is recorded: nothing left to do here. */
+    .badge.done {
+      background: transparent;
+      color: var(--text-dim);
     }
 
     /* ── Editor ─────────────────────────────────────────────────────────── */
@@ -454,10 +486,24 @@
 
     /* ── Stage preview ──────────────────────────────────────────────────── */
 
+    /* Two columns from 1100px up (see the media query): the stage stays in view
+       while the settings beside it scroll. Stacked below that. */
     .preview {
       display: flex;
       flex-direction: column;
+      gap: 16px;
+    }
+
+    .preview-stage,
+    .preview-settings {
+      display: flex;
+      flex-direction: column;
       gap: 10px;
+    }
+
+    /* The settings panels only exist for a selected scene. */
+    .preview-settings:has(> .pulse-panel:not([hidden])) .settings-empty {
+      display: none;
     }
 
     .stage {
@@ -653,6 +699,28 @@
         max-width: none;
       }
     }
+
+    /* Wide screens: the stage and the settings sit side by side, and the pane
+       itself doesn't scroll — the stage column stays put and only the settings
+       column scrolls, so the preview is always in view while tuning. */
+    @media (min-width: 1500px) {
+      .layout:not([hidden]) {
+        grid-template-columns: 260px minmax(0, 1fr) 640px;
+      }
+
+      .pane.preview {
+        display: grid;
+        grid-template-columns: 300px minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        overflow: hidden;
+      }
+
+      .preview-stage,
+      .preview-settings {
+        min-height: 0;
+        overflow-y: auto;
+      }
+    }
   </style>
 </head>
 <body>
@@ -673,6 +741,7 @@
   <div class="layout" id="app" hidden>
     <aside class="pane pool">
       <input type="search" id="filter" placeholder="Filter tracks…" autocomplete="off">
+      <div class="status-filter" id="statusFilter" role="group" aria-label="Filter by scene status"></div>
       <div id="trackList"></div>
     </aside>
 
@@ -681,6 +750,7 @@
     </main>
 
     <aside class="pane preview">
+      <div class="preview-stage">
       <div class="section-title">Stage preview</div>
       <div class="stage" id="stage">
         <!-- allow="autoplay": the pinned page plays the scene's audio (silently)
@@ -689,6 +759,20 @@
         <iframe id="stageFrame" title="Stage preview" tabindex="-1" allow="autoplay"></iframe>
       </div>
       <div class="preview-meta" id="previewMeta"></div>
+      <label><input type="checkbox" id="previewOn"> Live preview</label>
+      <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
+      <a id="previewOpen" href="#" target="_blank" rel="noopener" style="color: var(--text-dim);">Open in a tab ↗</a>
+      <div class="help">
+        <kbd>Space</kbd> play / pause<br>
+        <kbd>←</kbd><kbd>→</kbd> ±1s · <kbd>Shift</kbd> ±5s · <kbd>,</kbd><kbd>.</kbd> ±0.1s<br>
+        <kbd>I</kbd> / <kbd>O</kbd> set in / out at the playhead<br>
+        <kbd>Enter</kbd> add scene · <kbd>Esc</kbd> clear in/out<br>
+        <kbd>P</kbd> preview the selected scene as rendered<br>
+        Drag on the waveform to select a range.
+      </div>
+      </div>
+      <div class="preview-settings">
+      <p class="empty settings-empty">Select a scene to tune its pulse and glow.</p>
       <div class="pulse-panel" id="pulsePanel" hidden>
         <div class="section-title">Pulse <span id="pulseSummary" style="text-transform: none; letter-spacing: 0;"></span></div>
         <label class="pulse-row">
@@ -704,7 +788,7 @@
           <select id="pulseMode"></select>
           <span></span>
         </label>
-        <details id="pulseKnobsWrap">
+        <details id="pulseKnobsWrap" open>
           <summary>Knobs</summary>
           <div id="pulseKnobs"></div>
           <button id="pulseReset" style="margin-top: 8px;">Reset knobs</button>
@@ -712,22 +796,12 @@
         <button id="pulseUseDefault" hidden title="Drop this scene's own pulse and follow the default">↺ Use default pulse</button>
       </div>
       <div class="pulse-panel" id="glowPanel" hidden>
-        <details id="glowWrap">
+        <details id="glowWrap" open>
           <summary><span class="section-title" style="display: inline-flex;">Glow <span id="glowSummary" style="text-transform: none; letter-spacing: 0;"></span></span></summary>
           <div id="glowControls"></div>
           <button id="glowUseDefault" hidden title="Drop this scene's own look and use /radio's">↺ Use /radio look</button>
         </details>
       </div>
-      <label><input type="checkbox" id="previewOn"> Live preview</label>
-      <input type="url" id="siteUrl" placeholder="http://localhost:4321" title="cieslak-dev base URL">
-      <a id="previewOpen" href="#" target="_blank" rel="noopener" style="color: var(--text-dim);">Open in a tab ↗</a>
-      <div class="help">
-        <kbd>Space</kbd> play / pause<br>
-        <kbd>←</kbd><kbd>→</kbd> ±1s · <kbd>Shift</kbd> ±5s · <kbd>,</kbd><kbd>.</kbd> ±0.1s<br>
-        <kbd>I</kbd> / <kbd>O</kbd> set in / out at the playhead<br>
-        <kbd>Enter</kbd> add scene · <kbd>Esc</kbd> clear in/out<br>
-        <kbd>P</kbd> preview the selected scene as rendered<br>
-        Drag on the waveform to select a range.
       </div>
     </aside>
   </div>
@@ -736,9 +810,11 @@
     // ========================================================================
     // Constants mirrored from scripts/recordClips.ts — that file is what renders,
     // so keep these in sync. The scene preview reproduces the render's audio: the
-    // marked range exactly, with a FADE_SECONDS fade-out running inside its end.
+    // marked range exactly, with a FADE_IN_SECONDS fade-in and a FADE_OUT_SECONDS
+    // fade-out running inside its ends.
     // ========================================================================
-    const FADE_SECONDS = 2;
+    const FADE_IN_SECONDS = 0.5;
+    const FADE_OUT_SECONDS = 2;
     const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage';
 
     // Mirrored from src/scenePulse.ts (the validated, tested copy), which mirrors
@@ -791,6 +867,18 @@
     const KEY_STORAGE = 'radio_api_key'; // shared with the admin panel on /
     const SITE_STORAGE = 'scene_editor_site_url';
     const PREVIEW_STORAGE = 'scene_editor_preview_on';
+    const STATUS_STORAGE = 'scene_editor_status_filter';
+
+    /**
+     * Pool filters by scene status. `todo` is the working view: tracks with a
+     * scene still to film. A track lands in exactly one of todo/unmarked/done.
+     */
+    const STATUS_FILTERS = [
+      { id: 'all', label: 'All', title: 'Every track' },
+      { id: 'todo', label: 'To record', title: 'Tracks with at least one scene not yet recorded' },
+      { id: 'unmarked', label: 'No scenes', title: 'Tracks with no scenes marked yet' },
+      { id: 'done', label: 'Recorded', title: 'Tracks whose scenes are all recorded' },
+    ];
     /**
      * The pulse of any scene without its own (DEFAULT_SCENE_PULSE in
      * src/scenePulse.ts). Comes from the server with the scene list, so the
@@ -834,6 +922,10 @@
       /** filename -> Clip[], as stored by the server. */
       clips: {},
       filter: '',
+      /** One of STATUS_FILTERS' ids. */
+      statusFilter: STATUS_FILTERS.some(f => f.id === readStorage(STATUS_STORAGE))
+        ? readStorage(STATUS_STORAGE)
+        : 'all',
       /** The loaded track: { filename, track, buffer, overviewPeaks } */
       current: null,
       /** The in/out being marked, in seconds; either end may be unset. */
@@ -1052,10 +1144,11 @@
     }
 
     /**
-     * Play from `from` seconds. With `until`, stop there; with `fade`, ramp the
-     * gain to silence over the last `fade` seconds before `until`.
+     * Play from `from` seconds. With `until`, stop there; with `fadeIn`, ramp the
+     * gain up from silence over the first `fadeIn` seconds; with `fade`, ramp it
+     * to silence over the last `fade` seconds before `until`.
      */
-    function play(from, { until = durationSeconds(), fade = 0, previewClipId = null } = {}) {
+    function play(from, { until = durationSeconds(), fadeIn = 0, fade = 0, previewClipId = null } = {}) {
       if (!state.current) return;
       const ctx = audioContext();
       void ctx.resume();
@@ -1075,6 +1168,10 @@
       source.connect(gain).connect(ctx.destination);
 
       const now = ctx.currentTime;
+      if (fadeIn > 0) {
+        gain.gain.setValueAtTime(0, now);
+        gain.gain.linearRampToValueAtTime(1, now + fadeIn);
+      }
       if (fade > 0) {
         gain.gain.setValueAtTime(1, now + (until - fade - start));
         gain.gain.linearRampToValueAtTime(0, now + (until - start));
@@ -1140,14 +1237,15 @@
 
     /**
      * Play a scene exactly as the recorder will render it: the marked range, with
-     * the fade inside its end (shrunk to half the scene on very short ones).
+     * the fades inside its ends (each shrunk to half the scene on very short ones).
      */
     function previewClip(clip) {
       const start = clip.startMs / 1000;
       const end = Math.min(durationSeconds(), clip.endMs / 1000);
       play(start, {
         until: end,
-        fade: Math.min(FADE_SECONDS, (end - start) / 2),
+        fadeIn: Math.min(FADE_IN_SECONDS, (end - start) / 2),
+        fade: Math.min(FADE_OUT_SECONDS, (end - start) / 2),
         previewClipId: clip.id,
       });
     }
@@ -1362,15 +1460,41 @@
     // CORS-less copy and blocked. The real fix is on the CDN (always send
     // Access-Control-Allow-Origin, or Vary: Origin) — see docs/video-recording.md.
     // ========================================================================
+    function trackStatus(filename) {
+      const clips = state.clips[filename] || [];
+      if (clips.length === 0) return 'unmarked';
+      return clips.every(c => c.recorded) ? 'done' : 'todo';
+    }
+
     function renderTrackList() {
       const filter = state.filter.trim().toLowerCase();
       const list = $('trackList');
-      const visible = state.tracks.filter(track =>
+      const textMatches = state.tracks.filter(track =>
         !filter || `${track.title} ${track.artist} ${track.filename}`.toLowerCase().includes(filter),
       );
 
+      // Chip counts follow the text filter, so they say what clicking would show.
+      const counts = { all: textMatches.length, todo: 0, unmarked: 0, done: 0 };
+      for (const track of textMatches) counts[trackStatus(track.filename)]++;
+      $('statusFilter').innerHTML = STATUS_FILTERS.map(f => `
+        <button type="button" data-status="${f.id}" class="${f.id === state.statusFilter ? 'on' : ''}"
+          title="${f.title}" aria-pressed="${f.id === state.statusFilter}">${f.label}<span class="n">${counts[f.id]}</span></button>`,
+      ).join('');
+
+      // The open track stays listed even once it stops matching (e.g. its last
+      // scene was just ticked Recorded under "To record"), so it doesn't vanish
+      // from under you mid-edit. It drops out when you pick another.
+      const visible = textMatches.filter(track =>
+        state.statusFilter === 'all'
+        || trackStatus(track.filename) === state.statusFilter
+        || track.filename === state.current?.filename,
+      );
+
       list.innerHTML = visible.map(track => {
-        const count = (state.clips[track.filename] || []).length;
+        const clips = state.clips[track.filename] || [];
+        const count = clips.length;
+        const recorded = clips.filter(c => c.recorded).length;
+        const done = count > 0 && recorded === count;
         const active = state.current?.filename === track.filename;
         const art = track.albumArtUrl
           ? `<img src="${escapeHtml(track.albumArtUrl)}" alt="" loading="lazy">`
@@ -1382,7 +1506,7 @@
               <div class="track-title">${escapeHtml(track.title)}</div>
               <div class="track-artist">${escapeHtml(track.artist)}</div>
             </span>
-            ${count > 0 ? `<span class="badge" title="${count} scene(s)">${count}</span>` : ''}
+            ${count > 0 ? `<span class="badge${done ? ' done' : ''}" title="${recorded} of ${count} scene(s) recorded">${done ? '✓ ' : ''}${count}</span>` : ''}
           </button>`;
       }).join('') || '<p class="empty">No tracks match.</p>';
     }
@@ -1454,7 +1578,7 @@
         ? currentClips().find(clip => clip.id === player.previewClipId)
         : null;
       $('previewState').textContent = previewing
-        ? `Previewing scene as rendered (${FADE_SECONDS}s fade-out)`
+        ? `Previewing scene as rendered (${FADE_IN_SECONDS}s fade-in, ${FADE_OUT_SECONDS}s fade-out)`
         : '';
       redraw();
     }
@@ -1505,7 +1629,7 @@
         return `
           <div class="scene theme-${theme === 'dark' ? 'dark' : 'light'}${clip.id === state.selectedClipId ? ' selected' : ''}${clip.recorded ? ' recorded' : ''}" data-id="${escapeHtml(clip.id)}">
             <div class="scene-row">
-              <button class="icon-btn" data-act="preview" title="Preview as rendered, with the ${FADE_SECONDS}s fade-out (P)">▶</button>
+              <button class="icon-btn" data-act="preview" title="Preview as rendered, with the ${FADE_IN_SECONDS}s fade-in and ${FADE_OUT_SECONDS}s fade-out (P)">▶</button>
               <input class="tc mono" data-field="startMs" value="${formatTime(clip.startMs)}" aria-label="Start">
               <button class="icon-btn" data-act="start-here" title="Set start to the playhead">⤒</button>
               <span>→</span>
@@ -2237,6 +2361,14 @@
 
     $('filter').addEventListener('input', event => {
       state.filter = event.target.value;
+      renderTrackList();
+    });
+
+    $('statusFilter').addEventListener('click', event => {
+      const button = event.target.closest('[data-status]');
+      if (!button) return;
+      state.statusFilter = button.dataset.status;
+      writeStorage(STATUS_STORAGE, state.statusFilter === 'all' ? null : state.statusFilter);
       renderTrackList();
     });
 
