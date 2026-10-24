@@ -24,7 +24,7 @@
  *   bun run scripts/recordClips.ts --include-recorded    # also re-render recorded scenes
  *   bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
  *
- * Every scene renders to its own file, `<track-slug>-<scene-id>-1080x1920.mp4`
+ * Every scene renders to its own file, `<track-slug>-<scene-id>-<theme>-1080x1920.mp4`
  * (src/recordingPaths.ts). With RECORD_EVENTS=1 it also prints `@event` progress
  * lines (src/renderEvents.ts): that is how the scene editor runs and follows it.
  *
@@ -904,6 +904,8 @@ function buildJobs(
 		}
 		for (const clip of trackClips) {
 			if (options.clipId && clip.id !== options.clipId) continue
+			// A scene's own look wins; one without inherits its track's.
+			const theme = clip.theme ?? track.theme
 			// A scene ticked as recorded is done; a batch leaves it alone. Naming it
 			// with --clip is explicit, so that still renders it.
 			if (clip.recorded && !options.clipId && !options.includeRecorded) {
@@ -918,11 +920,10 @@ function buildJobs(
 			jobs.push({
 				filename,
 				clip,
-				outputPath: path.join(OUTPUT_DIR, recordingFilename(filename, clip.id)),
+				outputPath: path.join(OUTPUT_DIR, recordingFilename(filename, clip.id, theme)),
 				durationSeconds,
 				title: track.title,
-				// A scene's own look wins; one without inherits its track's.
-				theme: clip.theme ?? track.theme,
+				theme,
 				pulse: resolveScenePulse(clip.pulse),
 			})
 		}

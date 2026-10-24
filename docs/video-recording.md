@@ -266,7 +266,10 @@ For each scene the script:
    half its length.
 
 Every scene renders to its own file, so a track with three scenes gives three videos.
-Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-1080x1920.mp4`.
+Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-<theme>-1080x1920.mp4`.
+`<theme>` is the theme the scene was filmed in: `light`, `dark`, or `default` when
+neither the scene nor its track sets one. Re-rendering a scene in another theme
+writes a second file rather than replacing the first. The editor links the newer one.
 
 To clear the folder before a new batch, run `bun run scripts/archiveRecordings.ts`
 (`--dry-run` to preview). Nothing is deleted. Everything at the top level moves to
@@ -430,7 +433,7 @@ matter.
 | `GET /editor.html` | The scene editor |
 | `GET /api/tracks/:filename/audio` | The source MP3, decoded by the editor and by pinned mode. **Public** (the site has no key), which is one more reason this branch must not be deployed |
 | `PUT /admin/tracks/:filename/clips` | `{ clips: Clip[] }`: replace a track's scenes wholesale |
-| `GET /admin/clips` | Every scene, keyed by filename, plus `renders`: each scene's video (`{ url, sizeBytes, renderedAt }`), keyed by scene id |
+| `GET /admin/clips` | Every scene, keyed by filename, plus `renders`: each scene's newest video (`{ url, sizeBytes, renderedAt, theme }`), keyed by scene id |
 | `POST /admin/renders` | `{ clipId? \| track?, includeRecorded?, dryRun?, siteUrl? }`: start a render. Returns 409 if one is running. `dryRun` returns `{ jobs }`, the plan |
 | `GET /admin/renders` | `{ run }`: the current or last run's progress, per scene, and its log |
 | `DELETE /admin/renders` | Cancel the running render |

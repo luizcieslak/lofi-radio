@@ -1175,7 +1175,7 @@
       tracks: [],
       /** filename -> Clip[], as stored by the server. */
       clips: {},
-      /** clipId -> { url, sizeBytes, renderedAt }: scenes with a video in recordings/. */
+      /** clipId -> { url, sizeBytes, renderedAt, theme }: scenes with a video in recordings/. */
       renders: {},
       /** The current or last render run (GET /admin/renders), or null. */
       run: null,
@@ -2499,8 +2499,10 @@
       const video = state.renders[clip.id];
       if (video) {
         const when = new Date(video.renderedAt).toLocaleString();
+        // The look it was filmed in, which may no longer be the scene's own.
+        const look = video.theme ? ` · ${video.theme}` : '';
         return `<a class="render-chip" href="${escapeHtml(video.url)}" target="_blank" rel="noopener"
-          title="Rendered ${escapeHtml(when)} · ${formatBytes(video.sizeBytes)} — open the video">🎞 video</a>`;
+          title="Rendered ${escapeHtml(when)}${look} · ${formatBytes(video.sizeBytes)} — open the video">🎞 video${look}</a>`;
       }
       // A cancelled scene didn't fail; it just has no video yet, like any other.
       if (job?.status === 'failed' && !isCancelled(job)) {

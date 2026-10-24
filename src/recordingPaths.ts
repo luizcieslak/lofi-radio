@@ -7,6 +7,8 @@
  * into `recordings/backup/`) simply makes the link disappear.
  */
 
+import { isTrackTheme, type TrackTheme } from './types'
+
 /** Output folder, relative to the project root (the recorder's cwd). */
 export const OUTPUT_DIR = 'recordings'
 
@@ -35,7 +37,38 @@ export function slugify(input: string): string {
 	)
 }
 
-/** The render of one scene: `<track-slug>-<scene-id>-1080x1920.mp4`, inside OUTPUT_DIR. */
-export function recordingFilename(trackFilename: string, clipId: string): string {
-	return `${slugify(trackFilename)}-${clipId}-${WIDTH}x${HEIGHT}.mp4`
+/**
+ * The look a render was filmed in, as written in its name: the scene's resolved
+ * theme (`clip.theme ?? track.theme`), or `default` when neither sets one and the
+ * page used its own.
+ */
+export type RecordingTheme = TrackTheme | 'default'
+
+/**
+ * The render of one scene, inside OUTPUT_DIR:
+ * `<track-slug>-<scene-id>-<theme>-1080x1920.mp4`. The theme is in the name so a
+ * folder of renders can be sorted by look without opening them.
+ */
+export function recordingFilename(trackFilename: string, clipId: string, theme?: TrackTheme): string {
+	return `${slugify(trackFilename)}-${clipId}-${theme ?? 'default'}-${WIDTH}x${HEIGHT}.mp4`
+}
+
+/**
+ * Whether `file` is a render of this scene, and in which theme. Renders made
+ * before the theme was in the name (`<slug>-<id>-1080x1920.mp4`) still match,
+ * with a null theme. A scene re-rendered in another theme has one file per theme.
+ */
+export function parseRecordingFilename(
+	file: string,
+	trackFilename: string,
+	clipId: string,
+): { theme: RecordingTheme | null } | null {
+	const prefix = `${slugify(trackFilename)}-${clipId}-`
+	const suffix = `${WIDTH}x${HEIGHT}.mp4`
+	if (!file.startsWith(prefix) || !file.endsWith(suffix)) return null
+	const middle = file.slice(prefix.length, file.length - suffix.length)
+	if (middle === '') return { theme: null }
+	const theme = middle.slice(0, -1)
+	if (!middle.endsWith('-') || !(theme === 'default' || isTrackTheme(theme))) return null
+	return { theme }
 }

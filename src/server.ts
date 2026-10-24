@@ -15,7 +15,7 @@ import { normalizeInPlace } from './audioNormalizer'
 import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
-import { OUTPUT_DIR, recordingFilename } from './recordingPaths'
+import { OUTPUT_DIR, parseRecordingFilename, type RecordingTheme } from './recordingPaths'
 import { type RenderScope, renderRunner } from './renderRunner'
 import { GLOW_FLAGS, GLOW_NUMBERS } from './sceneGlow'
 import { DEFAULT_SCENE_PULSE } from './scenePulse'
@@ -627,6 +627,8 @@ interface SceneRender {
 	sizeBytes: number
 	/** The file's mtime (epoch ms). */
 	renderedAt: number
+	/** The look it was filmed in, from its name; null for renders named before that. */
+	theme: RecordingTheme | null
 }
 
 /**
@@ -637,20 +639,32 @@ interface SceneRender {
  * simply stops being found. `?v=` busts the cache when a scene is re-rendered.
  */
 function findRenders(clips: Record<string, { id: string }[]>): Record<string, SceneRender> {
+	let files: string[]
+	try {
+		files = fs.readdirSync(RECORDINGS_DIR).filter(file => file.endsWith('.mp4'))
+	} catch {
+		return {} // No recordings/ yet.
+	}
+
 	const renders: Record<string, SceneRender> = {}
 	for (const [filename, trackClips] of Object.entries(clips)) {
 		for (const clip of trackClips) {
-			const file = recordingFilename(filename, clip.id)
-			try {
-				const stats = fs.statSync(path.join(RECORDINGS_DIR, file))
-				if (!stats.isFile()) continue
+			// The theme is in the name, so a scene re-rendered in another look has a
+			// file per look; the newest is the one that reflects the scene now.
+			for (const file of files) {
+				const parsed = parseRecordingFilename(file, filename, clip.id)
+				if (!parsed) continue
+				const stats = fs.statSync(path.join(RECORDINGS_DIR, file), { throwIfNoEntry: false })
+				if (!stats?.isFile()) continue
+				const renderedAt = Math.round(stats.mtimeMs)
+				const existing = renders[clip.id]
+				if (existing && existing.renderedAt >= renderedAt) continue
 				renders[clip.id] = {
-					url: `/api/recordings/${encodeURIComponent(file)}?v=${Math.round(stats.mtimeMs)}`,
+					url: `/api/recordings/${encodeURIComponent(file)}?v=${renderedAt}`,
 					sizeBytes: stats.size,
-					renderedAt: Math.round(stats.mtimeMs),
+					renderedAt,
+					theme: parsed.theme,
 				}
-			} catch {
-				// Not rendered (yet).
 			}
 		}
 	}
