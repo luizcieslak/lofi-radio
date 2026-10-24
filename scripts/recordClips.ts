@@ -24,7 +24,9 @@
  *   bun run scripts/recordClips.ts --include-recorded    # also re-render recorded scenes
  *   bun run scripts/recordClips.ts --dry-run             # plan only, record nothing
  *
- * Every scene renders to its own file, `<track-slug>-<scene-id>-1080x1920.mp4`.
+ * Every scene renders to its own file, `<track-slug>-<scene-id>-1080x1920.mp4`
+ * (src/recordingPaths.ts). With RECORD_EVENTS=1 it also prints `@event` progress
+ * lines (src/renderEvents.ts): that is how the scene editor runs and follows it.
  *
  * Requires the radio running on `campaign/dj-controls` (for the scene data), the
  * site running on :4321 (with pinned-track mode), RADIO_API_KEY, ffmpeg, and
@@ -47,6 +49,8 @@
 import { spawn } from 'node:child_process'
 import { access, mkdir, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { HEIGHT, OUTPUT_DIR, recordingFilename, WIDTH } from '../src/recordingPaths'
+import { formatRenderEvent, parseRenderEvent, type RenderEvent } from '../src/renderEvents'
 import { glowQuery } from '../src/sceneGlow'
 import { pulseQuery, resolveScenePulse, type ScenePulse } from '../src/scenePulse'
 import { type Clip, isTrackTheme, type TrackTheme } from '../src/types'
@@ -66,9 +70,6 @@ const RADIO_URL = process.env.RADIO_URL ?? 'http://localhost:5634'
 const SITE_URL = process.env.SITE_URL ?? 'http://localhost:4321'
 const API_KEY = process.env.RADIO_API_KEY ?? ''
 
-/** Vertical, the shape Shorts / Reels / TikTok actually want. */
-const WIDTH = 1080
-const HEIGHT = 1920
 const FPS = 30
 
 /**
@@ -162,7 +163,6 @@ const CAPTURE_SLACK_MS = 90_000
  */
 const SUBPROCESS_TIMEOUT_MS = 120_000
 
-const OUTPUT_DIR = 'recordings'
 const SONGS_DIR = 'songs'
 
 /**
@@ -197,6 +197,16 @@ const PULSE_LEAD_MS = 67
 
 /** Ceiling on the pinned page decoding the scene's audio for the pulse. */
 const SCENE_AUDIO_TIMEOUT_MS = 30_000
+
+/**
+ * Machine-readable progress for the scene editor (see src/renderEvents.ts). Set
+ * by the server's render runner; off when run by hand, so the log reads as before.
+ */
+const EMIT_EVENTS = process.env.RECORD_EVENTS === '1'
+
+function emit(event: RenderEvent): void {
+	if (EMIT_EVENTS) console.log(formatRenderEvent(event))
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -346,27 +356,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string | (() =
 		const timer = setTimeout(() => reject(new Error(typeof message === 'function' ? message() : message)), ms)
 		promise.then(resolve, reject).finally(() => clearTimeout(timer))
 	})
-}
-
-/**
- * Filesystem-safe name for an output file.
- *
- * Track filenames in this library include spaces, apostrophes, parentheses, and
- * full-width unicode (e.g. "ＥＬＡ　ＭＯＲＡ..."), none of which we want in a
- * filename that gets dragged into a video editor.
- */
-function slugify(input: string): string {
-	return (
-		input
-			// NFKD splits accented and full-width characters into a base plus combining
-			// marks, which \p{M} then strips — so "Café" becomes "cafe", not "caf".
-			.normalize('NFKD')
-			.replace(/\p{M}/gu, '')
-			.replace(/\.mp3$/i, '')
-			.replace(/[^a-zA-Z0-9]+/g, '-')
-			.replace(/^-+|-+$/g, '')
-			.toLowerCase() || 'track'
-	)
 }
 
 // ---------------------------------------------------------------------------
@@ -926,11 +915,10 @@ function buildJobs(
 				console.warn(`  skipping ${filename} clip ${clip.id}: endMs is not after startMs`)
 				continue
 			}
-			const name = `${slugify(filename)}-${clip.id}-${WIDTH}x${HEIGHT}.mp4`
 			jobs.push({
 				filename,
 				clip,
-				outputPath: path.join(OUTPUT_DIR, name),
+				outputPath: path.join(OUTPUT_DIR, recordingFilename(filename, clip.id)),
 				durationSeconds,
 				title: track.title,
 				// A scene's own look wins; one without inherits its track's.
@@ -1025,11 +1013,18 @@ function renderInChild(clipId: string): Promise<void> {
 			env: process.env,
 		})
 		let stderr = ''
-		// Only the per-stage "… step" lines matter here; the child repeats the
-		// header and summary that the parent already prints.
+		/**
+		 * Only the per-stage "… step" lines (and their `step` events) matter here;
+		 * the child repeats the header, summary and start/done/fail that the parent
+		 * already reports. Buffered by line: a chunk can end mid-line, which would
+		 * cut an event in two.
+		 */
+		let pending = ''
 		child.stdout.on('data', chunk => {
-			for (const line of String(chunk).split('\n')) {
-				if (line.startsWith('  … ')) console.log(line)
+			const lines = (pending + String(chunk)).split('\n')
+			pending = lines.pop() ?? ''
+			for (const line of lines) {
+				if (line.startsWith('  … ') || parseRenderEvent(line)?.type === 'step') console.log(line)
 			}
 		})
 		child.stderr.on('data', chunk => {
@@ -1059,6 +1054,18 @@ async function main(): Promise<void> {
 
 	const [clips, tracks] = await Promise.all([fetchClips(), fetchTracks()])
 	const jobs = buildJobs(clips, tracks, options)
+
+	emit({
+		type: 'plan',
+		jobs: jobs.map(job => ({
+			clipId: job.clip.id,
+			filename: job.filename,
+			title: job.title,
+			...(job.clip.label ? { label: job.clip.label } : {}),
+			outputPath: job.outputPath,
+			durationSeconds: job.durationSeconds,
+		})),
+	})
 
 	if (jobs.length === 0) {
 		console.log('No clips matched. Mark some in the scene editor (/editor.html) first.')
@@ -1105,13 +1112,20 @@ async function main(): Promise<void> {
 		const workDir = path.join(OUTPUT_DIR, `.work-${job.clip.id}`)
 		await rm(workDir, { recursive: true, force: true })
 		await mkdir(workDir, { recursive: true })
+		const clipId = job.clip.id
+		emit({ type: 'start', clipId })
 		try {
-			await renderClip(job, workDir, message => console.log(`  … ${message}`))
+			await renderClip(job, workDir, message => {
+				console.log(`  … ${message}`)
+				emit({ type: 'step', clipId, message })
+			})
 			console.log(`  ✓ ${job.outputPath}`)
+			emit({ type: 'done', clipId, outputPath: job.outputPath })
 			console.log('\nDone: 1 rendered, 0 failed.')
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error)
 			console.error(`  ✗ ${message}`)
+			emit({ type: 'fail', clipId, error: message })
 			console.log('\nDone: 0 rendered, 1 failed.')
 			process.exitCode = 1
 		} finally {
@@ -1123,15 +1137,18 @@ async function main(): Promise<void> {
 	const results: RenderResult[] = []
 	for (const [index, job] of jobs.entries()) {
 		console.log(`\n[${index + 1}/${jobs.length}] ${job.filename} [${job.clip.id}]`)
+		emit({ type: 'start', clipId: job.clip.id })
 		try {
 			// `--clip` renders exactly this one, so the child does the work below.
 			await renderInChild(job.clip.id)
 			console.log(`  ✓ ${job.outputPath}`)
+			emit({ type: 'done', clipId: job.clip.id, outputPath: job.outputPath })
 			results.push({ job, ok: true })
 		} catch (error) {
 			// One bad clip should not abandon the rest of the batch.
 			const message = error instanceof Error ? error.message : String(error)
 			console.error(`  ✗ ${message}`)
+			emit({ type: 'fail', clipId: job.clip.id, error: message })
 			results.push({ job, ok: false, error: message })
 		}
 	}

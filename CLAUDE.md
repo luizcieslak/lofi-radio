@@ -170,7 +170,10 @@ REST API and web server with endpoints:
 - `GET /editor.html` — the scene editor ([public/editor.html](public/editor.html))
 - `GET /api/tracks/:filename/audio` — the raw source MP3, decoded by the editor and the site's pinned mode. **Public** (no key — the site fetches it), so this branch must never be deployed
 - `PUT /admin/tracks/:filename/clips` — `{ clips: Clip[] }` replace a track's scenes (wholesale)
-- `GET /admin/clips` — all scenes keyed by filename (JSON export + pool badges)
+- `GET /admin/clips` — all scenes keyed by filename (JSON export + pool badges), plus `renders`: each scene's video in `recordings/`, keyed by scene id
+- `POST /admin/renders` / `GET /admin/renders` / `DELETE /admin/renders` — start (`{ clipId? | track?, includeRecorded?, dryRun?, siteUrl? }`), poll, or cancel a run of `scripts/recordClips.ts`
+- `POST /admin/recordings/archive` — `{ dryRun? }`: `archiveRecordings()` from `scripts/archiveRecordings.ts`. Returns 409 mid-render
+- `GET /api/recordings/:file` — a rendered MP4. **Public**, like the audio route, so the editor links to it plainly
 
 **Scenes.** A scene (`Clip`: `startMs`, `endMs`, `label?`, `theme?`, `pulse?`, `glow?`, `recorded?`) is a
 slice of a song to turn into a ~1min promo video, plus the look of the page while it is
@@ -228,6 +231,16 @@ into a 1080x1920 MP4 unattended. For each scene it:
    software rendering ran the glow at ~6 fps.
 5. Cuts the audio from the source MP3 and muxes.
 
+**From the editor.** The editor's 🎥 buttons (one scene / one track) and its 🎬 Renders
+drawer (render all, progress, cancel, log, archive) run the same script through
+[src/renderRunner.ts](src/renderRunner.ts): a child process in its own process group,
+one run at a time, followed through the `@event` lines the script prints when
+`RECORD_EVENTS=1` ([src/renderEvents.ts](src/renderEvents.ts)). The runner lives on
+`globalThis`, so a `bun --hot` reload doesn't lose a run in progress. Each scene links
+to its video, found on disk by the recorder's naming
+([src/recordingPaths.ts](src/recordingPaths.ts)), never stored. A finished render never
+ticks `recorded`.
+
 Audio never comes from the capture: Playwright records none, and a capture would add a
 second generational loss. The script doesn't touch the broadcast. Details, including
 the capture flakes it guards against, are in
@@ -276,6 +289,9 @@ lofi-radio/
 │   ├── mp3parser.ts        # MP3 frame parser & precise timer
 │   ├── playlistManager.ts  # Playlist management with persistence
 │   ├── metadataManager.ts  # Track metadata storage & ID3 extraction
+│   ├── renderRunner.ts     # Runs/cancels recordClips.ts for the editor (campaign branch)
+│   ├── renderEvents.ts     # recordClips.ts `@event` progress protocol (campaign branch)
+│   ├── recordingPaths.ts   # recordings/ naming, shared by recorder + server (campaign branch)
 │   └── types.ts            # TypeScript interfaces
 ├── songs/                  # MP3 files directory (auto-scanned)
 │   ├── *.mp3

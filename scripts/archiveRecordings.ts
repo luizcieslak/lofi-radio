@@ -16,13 +16,16 @@
  * Usage:
  *   bun run scripts/archiveRecordings.ts             # move everything
  *   bun run scripts/archiveRecordings.ts --dry-run   # list what would move
+ *
+ * The scene editor runs the same thing through `archiveRecordings()` (POST
+ * /admin/recordings/archive), which is why the work lives in an export.
  */
 
 import { access, mkdir, readdir, rename } from 'node:fs/promises'
 import path from 'node:path'
+import { OUTPUT_DIR } from '../src/recordingPaths'
 
-const OUTPUT_DIR = 'recordings'
-const BACKUP_DIR = path.join(OUTPUT_DIR, 'backup')
+const BACKUP = 'backup'
 
 function timestamp(now: Date): string {
 	const pad = (n: number) => String(n).padStart(2, '0')
@@ -40,12 +43,45 @@ async function exists(file: string): Promise<boolean> {
 }
 
 /** A backup folder path no earlier run has used: `<stamp>`, else `<stamp>-2`… */
-async function freeFolder(stamp: string): Promise<string> {
-	let candidate = path.join(BACKUP_DIR, stamp)
+async function freeFolder(backupDir: string, stamp: string): Promise<string> {
+	let candidate = path.join(backupDir, stamp)
 	for (let n = 2; await exists(candidate); n++) {
-		candidate = path.join(BACKUP_DIR, `${stamp}-${n}`)
+		candidate = path.join(backupDir, `${stamp}-${n}`)
 	}
 	return candidate
+}
+
+export interface ArchiveOptions {
+	dryRun?: boolean
+	/** The recordings folder. Defaults to OUTPUT_DIR, relative to the cwd. */
+	outputDir?: string
+	/** The stamp's clock; injectable so tests can force a collision. */
+	now?: Date
+}
+
+export interface ArchiveResult {
+	/** Entry names moved (or, on a dry run, that would be), sorted. */
+	moved: string[]
+	/** The backup folder they went to; null when there was nothing to move. */
+	target: string | null
+}
+
+export async function archiveRecordings({
+	dryRun = false,
+	outputDir = OUTPUT_DIR,
+	now = new Date(),
+}: ArchiveOptions = {}): Promise<ArchiveResult> {
+	if (!(await exists(outputDir))) return { moved: [], target: null }
+
+	const entries = (await readdir(outputDir)).filter(name => name !== BACKUP && !name.startsWith('.')).sort()
+	if (entries.length === 0) return { moved: [], target: null }
+
+	const target = await freeFolder(path.join(outputDir, BACKUP), timestamp(now))
+	if (!dryRun) {
+		await mkdir(target, { recursive: true })
+		for (const name of entries) await rename(path.join(outputDir, name), path.join(target, name))
+	}
+	return { moved: entries, target }
 }
 
 async function main(): Promise<void> {
@@ -56,21 +92,16 @@ async function main(): Promise<void> {
 		return
 	}
 
-	const entries = (await readdir(OUTPUT_DIR)).filter(name => name !== 'backup' && !name.startsWith('.'))
-	if (entries.length === 0) {
+	const { moved, target } = await archiveRecordings({ dryRun })
+	if (!target) {
 		console.log(`${OUTPUT_DIR}/ is already clean.`)
 		return
 	}
 
-	const target = await freeFolder(timestamp(new Date()))
-	if (!dryRun) await mkdir(target, { recursive: true })
-
-	for (const name of entries.sort()) {
+	for (const name of moved) {
 		console.log(`${dryRun ? '[dry-run] ' : ''}${name} -> ${path.join(target, name)}`)
-		if (!dryRun) await rename(path.join(OUTPUT_DIR, name), path.join(target, name))
 	}
-
-	console.log(`${dryRun ? 'Would move' : 'Moved'} ${entries.length} item(s) to ${target}/`)
+	console.log(`${dryRun ? 'Would move' : 'Moved'} ${moved.length} item(s) to ${target}/`)
 }
 
-await main()
+if (import.meta.main) await main()

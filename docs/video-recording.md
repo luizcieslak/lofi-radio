@@ -210,6 +210,45 @@ bun run scripts/recordClips.ts --include-recorded    # re-render Recorded scenes
 bun run scripts/recordClips.ts --dry-run             # plan only (shows theme and pulse)
 ```
 
+### From the editor
+
+The editor can run the same script and follow it, with no terminal needed:
+
+- **🎥 on a scene** renders that one scene (`--clip`, so it renders even if it is
+  marked Recorded).
+- **🎥 Render track** above the scene list renders the track's scenes that aren't
+  marked Recorded yet (`--track`).
+- **🎬 Renders** in the header opens a drawer that holds the rest:
+  - **Render all videos**, optionally including scenes already marked Recorded. Before
+    you start, it shows how many scenes would render and roughly how long that takes,
+    from a dry run.
+  - Progress: the batch as a whole, plus a bar for the current scene's real-time
+    capture.
+  - The queue. Click a row to open that scene.
+  - Cancel.
+  - The recorder's log.
+  - **Archive recordings** (below).
+
+While a batch runs, the header button shows its progress, so you can keep marking
+scenes with the drawer closed.
+
+Each scene row shows its render status: queued, the current step, ✗ failed (hover for
+the reason), or **🎞 video**, a link to the file the recorder wrote. The link is found
+on disk by the recorder's naming ([src/recordingPaths.ts](../src/recordingPaths.ts)),
+not stored on the scene. So it can't go stale: archive a render and its link goes
+away. A finished render does **not** tick Recorded. You still tick it by hand, once
+you've watched the video.
+
+How it works: the server runs the script as a child process
+([src/renderRunner.ts](../src/renderRunner.ts)), one run at a time, in its own process
+group, so Cancel also reaches each scene's browser and ffmpeg. With `RECORD_EVENTS=1`
+the script prints `@event {json}` progress lines
+([src/renderEvents.ts](../src/renderEvents.ts)). The runner parses those rather than
+the human-readable log. Run by hand, the script prints none of them. The editor polls
+`GET /admin/renders` once a second, because `EventSource` can't send the API key.
+Before a render starts, any pulse or glow tweak still waiting to save is saved, so
+the video matches what the editor shows.
+
 For each scene the script:
 
 1. Opens the site's radio page **pinned** to the scene's track, theme and pulse.
@@ -232,7 +271,10 @@ Output lands in `recordings/` (gitignored) as `<track-slug>-<clip-id>-1080x1920.
 To clear the folder before a new batch, run `bun run scripts/archiveRecordings.ts`
 (`--dry-run` to preview). Nothing is deleted. Everything at the top level moves to
 `recordings/backup/<YYYY-MM-DDTHH-MM-SS>/`, a fresh folder per run.
-It leaves `backup/` and the `.work-*` render dirs alone.
+It leaves `backup/` and the `.work-*` render dirs alone. The editor's **Archive
+recordings** button does the same thing (it calls the script's exported
+`archiveRecordings()`). It asks for confirmation first, and it's disabled while a
+render runs.
 
 Captures run in real time, so a 60s scene takes at least 60s plus setup and encode. A
 failed scene is reported and the batch continues. Each multi-scene batch renders every
@@ -388,7 +430,12 @@ matter.
 | `GET /editor.html` | The scene editor |
 | `GET /api/tracks/:filename/audio` | The source MP3, decoded by the editor and by pinned mode. **Public** (the site has no key), which is one more reason this branch must not be deployed |
 | `PUT /admin/tracks/:filename/clips` | `{ clips: Clip[] }`: replace a track's scenes wholesale |
-| `GET /admin/clips` | Every scene, keyed by filename |
+| `GET /admin/clips` | Every scene, keyed by filename, plus `renders`: each scene's video (`{ url, sizeBytes, renderedAt }`), keyed by scene id |
+| `POST /admin/renders` | `{ clipId? \| track?, includeRecorded?, dryRun?, siteUrl? }`: start a render. Returns 409 if one is running. `dryRun` returns `{ jobs }`, the plan |
+| `GET /admin/renders` | `{ run }`: the current or last run's progress, per scene, and its log |
+| `DELETE /admin/renders` | Cancel the running render |
+| `POST /admin/recordings/archive` | `{ dryRun? }`: move `recordings/` into `recordings/backup/<stamp>/`. Returns 409 mid-render |
+| `GET /api/recordings/:file` | A rendered MP4, with range requests for seeking. **Public**, so a plain link can open it |
 | `PATCH /admin/tracks/:filename/metadata` | `{ theme: "light" \| "dark" \| null }` — the track-level default, among other fields |
 | `GET /api/tracks` | Public playlist; what pinned mode and the recorder read titles/themes from |
 

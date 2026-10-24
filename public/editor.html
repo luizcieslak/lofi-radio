@@ -633,6 +633,214 @@
       color: #c7d2fe;
     }
 
+    /* Render status of a scene: its video, or where a run has got to with it. */
+    .render-chip {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      white-space: nowrap;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-decoration: none;
+      background: var(--bg-card);
+      color: var(--text-dim);
+    }
+
+    a.render-chip {
+      background: rgba(74, 222, 128, 0.18);
+      color: var(--ok);
+    }
+
+    a.render-chip:hover {
+      background: rgba(74, 222, 128, 0.3);
+    }
+
+    .render-chip.rendering {
+      background: rgba(102, 126, 234, 0.25);
+      color: #c7d2fe;
+    }
+
+    .render-chip.failed {
+      background: rgba(248, 113, 113, 0.18);
+      color: var(--error);
+    }
+
+    .section-title button {
+      margin-left: auto;
+      font-size: 11px;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 500;
+      padding: 3px 8px;
+    }
+
+    /* ── Renders drawer ─────────────────────────────────────────────────── */
+
+    #rendersBtn.running {
+      background: rgba(102, 126, 234, 0.35);
+    }
+
+    dialog.drawer {
+      margin: 0 0 0 auto;
+      width: 100%;
+      height: 100vh;
+      max-height: 100vh;
+      max-width: 100vw;
+      border: none;
+      border-left: 1px solid var(--border);
+      background: #171a30;
+      color: #fff;
+      padding: 0;
+    }
+
+    dialog.drawer::backdrop {
+      background: rgba(0, 0, 0, 0.45);
+    }
+
+    .drawer-inner {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 16px;
+    }
+
+    .drawer-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .drawer-head h2 {
+      font-size: 15px;
+      font-weight: 600;
+      flex: 1;
+    }
+
+    /* Scoped to :not([hidden]) like #auth: the sections are toggled by `hidden`. */
+    .drawer section:not([hidden]) {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    #renderProgressBody {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .drawer .hint {
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+
+    .drawer label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-dim);
+    }
+
+    .bar {
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 0.8s linear;
+    }
+
+    .progress-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      color: var(--text-dim);
+    }
+
+    .progress-line strong {
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .queue {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .queue-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      padding: 5px 6px;
+    }
+
+    .queue-row .q-icon {
+      width: 16px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .queue-row .q-text {
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .queue-row .q-meta {
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .queue-row.done .q-icon { color: var(--ok); }
+    .queue-row.failed .q-icon { color: var(--error); }
+    .queue-row.rendering { background: rgba(102, 126, 234, 0.18); }
+    .queue-row.queued { color: var(--text-dim); }
+
+    .queue-row a {
+      color: var(--ok);
+      text-decoration: none;
+    }
+
+    #renderLog {
+      max-height: 260px;
+      overflow: auto;
+      padding: 8px;
+      border-radius: 6px;
+      background: rgba(0, 0, 0, 0.3);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text-dim);
+    }
+
+    .drawer details summary {
+      cursor: pointer;
+      color: var(--text-dim);
+    }
+
+    .drawer .result.ok { color: var(--ok); }
+    .drawer .result.error { color: var(--error); }
+
+    @media (min-width: 600px) {
+      dialog.drawer {
+        width: 480px;
+      }
+    }
+
     .preview label {
       display: flex;
       align-items: center;
@@ -728,8 +936,52 @@
     <h1>🎬 Scene editor</h1>
     <a href="/">← Radio</a>
     <span id="status"></span>
+    <button id="rendersBtn" title="Render scene videos and follow the batch">🎬 Renders</button>
     <button id="exportBtn" title="Download every scene as JSON">⬇ Export</button>
   </header>
+
+  <!-- Runs scripts/recordClips.ts through the server (src/renderRunner.ts) and
+       follows it, and archives recordings/ (scripts/archiveRecordings.ts). -->
+  <dialog class="drawer" id="rendersDialog" aria-labelledby="rendersTitle">
+    <div class="drawer-inner">
+      <div class="drawer-head">
+        <h2 id="rendersTitle">🎬 Renders</h2>
+        <button id="rendersClose" title="Close (Esc)">✕</button>
+      </div>
+
+      <section id="renderStart">
+        <div class="section-title">Render all videos</div>
+        <label><input type="checkbox" id="includeRecorded"> Include scenes already marked recorded</label>
+        <p class="hint" id="renderPlan">…</p>
+        <button class="primary" id="renderAll" disabled>Render all videos</button>
+      </section>
+
+      <section id="renderProgress" hidden>
+        <div id="renderProgressBody"></div>
+        <button id="cancelRender">⏹ Cancel</button>
+      </section>
+
+      <p class="result" id="renderResult" hidden></p>
+
+      <section id="renderQueueWrap" hidden>
+        <div class="section-title">Queue</div>
+        <div class="queue" id="renderQueue"></div>
+      </section>
+
+      <details id="renderLogWrap" hidden>
+        <summary>Recorder log</summary>
+        <pre id="renderLog"></pre>
+      </details>
+
+      <section>
+        <div class="section-title">Archive</div>
+        <p class="hint">Moves every video in <code>recordings/</code> into
+          <code>recordings/backup/&lt;date-time&gt;/</code>, ready for a fresh batch. Nothing
+          is deleted. Scene video links point at <code>recordings/</code>, so they go away.</p>
+        <button id="archiveBtn">Archive recordings</button>
+      </section>
+    </div>
+  </dialog>
 
   <form id="auth" hidden>
     <p>Enter the radio's API key (<code>RADIO_API_KEY</code>).</p>
@@ -815,6 +1067,8 @@
     // ========================================================================
     const FADE_IN_SECONDS = 0.5;
     const FADE_OUT_SECONDS = 2;
+    /** Per-scene overhead beyond its real-time capture, for time estimates. */
+    const SETUP_SECONDS = 8;
     const PAGE_FLAGS = 'drift=12&driftSpeed=3&stage';
 
     // Mirrored from src/scenePulse.ts (the validated, tested copy), which mirrors
@@ -921,6 +1175,10 @@
       tracks: [],
       /** filename -> Clip[], as stored by the server. */
       clips: {},
+      /** clipId -> { url, sizeBytes, renderedAt }: scenes with a video in recordings/. */
+      renders: {},
+      /** The current or last render run (GET /admin/renders), or null. */
+      run: null,
       filter: '',
       /** One of STATUS_FILTERS' ids. */
       statusFilter: STATUS_FILTERS.some(f => f.id === readStorage(STATUS_STORAGE))
@@ -1561,7 +1819,9 @@
           <button id="clearSel" title="Clear in/out (Esc)">✕</button>
         </div>
 
-        <div class="section-title">Scenes <span id="sceneCount"></span></div>
+        <div class="section-title">Scenes <span id="sceneCount"></span>
+          <button id="renderTrack" title="Render this track's scenes not yet marked recorded">🎥 Render track</button>
+        </div>
         <div id="sceneList"></div>
       `;
 
@@ -1609,6 +1869,7 @@
       if (!list) return;
       const clips = sortedClips();
       $('sceneCount').textContent = clips.length ? `(${clips.length})` : '';
+      $('renderTrack').disabled = renderRunning() || !clips.some(clip => !clip.recorded);
 
       if (clips.length === 0) {
         list.innerHTML = '<p class="empty" style="padding: 20px;">No scenes yet. Mark an in and an out, then add one.</p>';
@@ -1639,6 +1900,9 @@
               ${pulseOf(clip).amount > 0 ? `<span class="pulse-chip" title="${inheritsPulse(clip) ? 'Default glow pulse' : 'Glow pulse (this scene)'}">〰 ${escapeHtml(pulseSummary(pulseOf(clip)))}${inheritsPulse(clip) ? ' · default' : ''}</span>` : ''}
               ${glowSetting.inherits(clip) ? '' : `<span class="pulse-chip" title="Glow look (this scene): ${escapeHtml(glowQuery(glowSetting.of(clip)).toString() || 'same as /radio')}">◐ look</span>`}
               ${warnings.length ? `<span class="warn" title="${escapeHtml(warnings.join('; '))}">⚠</span>` : ''}
+              <span class="spacer"></span>
+              <span class="render-slot">${renderChip(clip)}</span>
+              <button class="icon-btn" data-act="render" title="Render this scene's video"${renderRunning() ? ' disabled' : ''}>🎥</button>
             </div>
             <div class="scene-row">
               <span class="theme-toggle">${themeButton('light')}${themeButton('dark')}</span>
@@ -1786,6 +2050,15 @@
         /** Whether a scene is on the default rather than a value of its own. */
         inherits: clip => !pending.has(clip.id) && !clip[field],
         isPending: clipId => pending.has(clipId),
+        /** Save every edit still waiting on its debounce, now; resolves once saved. */
+        flush() {
+          const ids = [...timers.keys()];
+          for (const id of ids) {
+            clearTimeout(timers.get(id));
+            timers.delete(id);
+          }
+          return Promise.all(ids.map(id => save(id)));
+        },
         /** Apply a new value to the selected scene: preview now, save shortly after. */
         set(next) {
           const clip = selectedClip();
@@ -2154,6 +2427,418 @@
     }
 
     // ========================================================================
+    // Renders — scripts/recordClips.ts, run and followed through the server
+    // (src/renderRunner.ts). The run is polled rather than streamed: EventSource
+    // can't send the API key.
+    //
+    // A finished render never ticks `recorded`; that stays a judgement made by
+    // hand after watching the video, which the scene now links to.
+    // ========================================================================
+    const RENDER_POLL_MS = 1000;
+    let pollTimer = null;
+    /** Scenes the poll last saw done, to refresh video links as each one lands. */
+    let seenDone = 0;
+
+    function renderRunning() {
+      return state.run?.running === true;
+    }
+
+    function runJobs(run = state.run) {
+      return run ? run.order.map(id => run.jobs[id]).filter(Boolean) : [];
+    }
+
+    /** Stopped by Cancel rather than failed: the runner marks those `cancelled`. */
+    function isCancelled(job) {
+      return job.status === 'failed' && job.error === 'cancelled';
+    }
+
+    /** "3 rendered, 1 failed, 17 cancelled", leaving out the zeros past the first. */
+    function runSummary(jobs) {
+      const done = jobs.filter(job => job.status === 'done').length;
+      const cancelled = jobs.filter(isCancelled).length;
+      const failed = jobs.filter(job => job.status === 'failed').length - cancelled;
+      return [`${done} rendered`, failed && `${failed} failed`, cancelled && `${cancelled} cancelled`]
+        .filter(Boolean)
+        .join(', ');
+    }
+
+    function formatBytes(bytes) {
+      return bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.round(bytes / 1e3)} KB`;
+    }
+
+    function formatMinutes(seconds) {
+      return seconds < 60 ? `${Math.max(1, Math.round(seconds))}s` : `${Math.ceil(seconds / 60)} min`;
+    }
+
+    /**
+     * How far through its render a scene is, 0–1, estimated from its step: the
+     * capture runs in real time, so its share is elapsed over the scene's length.
+     * The capture step starts before the browser is up, so it is capped short of
+     * done until the recorder moves on.
+     */
+    function jobFraction(job) {
+      if (job.status === 'done' || job.status === 'failed') return 1;
+      if (job.status !== 'rendering' || !job.step) return 0;
+      if (job.step.startsWith('capturing')) {
+        const elapsed = (Date.now() - (job.stepStartedAt ?? Date.now())) / 1000;
+        return 0.85 * Math.min(0.99, elapsed / job.durationSeconds);
+      }
+      return 0.9;
+    }
+
+    /** A scene's chip: where the run has got to with it, else its video, else its last failure. */
+    function renderChip(clip) {
+      const job = state.run?.jobs[clip.id];
+      if (renderRunning() && job?.status === 'queued') {
+        return '<span class="render-chip" title="Waiting for its turn in the batch">⏳ queued</span>';
+      }
+      if (renderRunning() && job?.status === 'rendering') {
+        const step = job.step || 'starting';
+        return `<span class="render-chip rendering" title="${escapeHtml(step)}">● ${escapeHtml(step)}</span>`;
+      }
+      const video = state.renders[clip.id];
+      if (video) {
+        const when = new Date(video.renderedAt).toLocaleString();
+        return `<a class="render-chip" href="${escapeHtml(video.url)}" target="_blank" rel="noopener"
+          title="Rendered ${escapeHtml(when)} · ${formatBytes(video.sizeBytes)} — open the video">🎞 video</a>`;
+      }
+      // A cancelled scene didn't fail; it just has no video yet, like any other.
+      if (job?.status === 'failed' && !isCancelled(job)) {
+        return `<span class="render-chip failed" title="${escapeHtml(job.error || 'failed')}">✗ failed</span>`;
+      }
+      return '';
+    }
+
+    /** Re-read scenes and their videos, e.g. once renders land or are archived. */
+    async function refreshScenes() {
+      try {
+        const response = await api('/admin/clips');
+        if (!response.ok) return;
+        const body = await response.json();
+        state.clips = body.clips;
+        state.renders = body.renders || {};
+      } catch {
+        return;
+      }
+      renderTrackList();
+      renderScenes();
+      renderRendersPanel();
+    }
+
+    /**
+     * Start a render: `{ clipId }`, `{ track }`, or `{}` for every scene, each
+     * with `includeRecorded`. Edits still waiting on their debounce are saved
+     * first: the recorder reads the scenes from the server, so an unsaved pulse
+     * tweak would otherwise be filmed without.
+     */
+    async function startRender(scope) {
+      if (renderRunning()) return;
+      try {
+        await Promise.all([pulseSetting.flush(), glowSetting.flush()]);
+        await saveQueue;
+        const response = await api('/admin/renders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...scope, siteUrl: siteUrl() }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (body.run) state.run = body.run;
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        seenDone = 0;
+        setStatus('Render started', 'ok');
+      } catch (error) {
+        setStatus(`Render failed to start: ${error.message}`, 'error');
+      }
+      renderRunUi();
+      schedulePoll();
+    }
+
+    async function cancelRender() {
+      if (!confirm('Cancel the render? The scene being filmed is lost; finished videos stay.')) return;
+      try {
+        const response = await api('/admin/renders', { method: 'DELETE' });
+        const body = await response.json().catch(() => ({}));
+        if (body.run) state.run = body.run;
+      } catch (error) {
+        setStatus(`Cancel failed: ${error.message}`, 'error');
+      }
+      renderRunUi();
+    }
+
+    function schedulePoll() {
+      clearTimeout(pollTimer);
+      if (renderRunning()) pollTimer = setTimeout(pollRenders, RENDER_POLL_MS);
+    }
+
+    async function pollRenders() {
+      const wasRunning = renderRunning();
+      try {
+        const response = await api('/admin/renders');
+        if (response.ok) state.run = (await response.json()).run;
+      } catch {
+        // Keep the last snapshot; the next poll retries.
+      }
+      const done = runJobs().filter(job => job.status === 'done').length;
+      const landed = done !== seenDone;
+      seenDone = done;
+      if ((wasRunning && !renderRunning()) || landed) await refreshScenes();
+      if (wasRunning && !renderRunning()) {
+        const failed = runJobs().some(job => job.status === 'failed' && !isCancelled(job));
+        const verb = state.run?.cancelled ? 'cancelled' : 'finished';
+        setStatus(`Render ${verb}: ${runSummary(runJobs())}`, failed || state.run?.error ? 'error' : 'ok');
+      }
+      renderRunUi();
+      schedulePoll();
+    }
+
+    /** Everything that shows the run: header button, scene rows, the drawer. */
+    function renderRunUi() {
+      const button = $('rendersBtn');
+      const jobs = runJobs();
+      if (renderRunning()) {
+        const finished = jobs.filter(job => job.status === 'done' || job.status === 'failed').length;
+        const fraction = jobs.length ? jobs.reduce((sum, job) => sum + jobFraction(job), 0) / jobs.length : 0;
+        const position = Math.min(jobs.length, finished + 1);
+        button.textContent = jobs.length
+          ? `🎬 Rendering ${position}/${jobs.length} · ${Math.round(fraction * 100)}%`
+          : '🎬 Rendering…';
+      } else {
+        button.textContent = '🎬 Renders';
+      }
+      button.classList.toggle('running', renderRunning());
+      updateRenderChips();
+      renderRendersPanel();
+    }
+
+    /**
+     * Refresh the scene rows' render status in place. Not renderScenes(): this
+     * runs on every poll, and rebuilding the rows would drop the focus (and the
+     * half-typed text) of any input you're editing mid-render.
+     */
+    function updateRenderChips() {
+      const list = $('sceneList');
+      if (!list) return;
+      $('renderTrack').disabled = renderRunning() || !currentClips().some(clip => !clip.recorded);
+      for (const row of list.querySelectorAll('.scene')) {
+        const clip = currentClips().find(c => c.id === row.dataset.id);
+        if (!clip) continue;
+        const slot = row.querySelector('.render-slot');
+        const html = renderChip(clip);
+        // Compared against what was written, not innerHTML, which re-serializes.
+        if (slot.dataset.html !== html) {
+          slot.innerHTML = html;
+          slot.dataset.html = html;
+        }
+        row.querySelector('[data-act="render"]').disabled = renderRunning();
+      }
+    }
+
+    // ── The drawer ──────────────────────────────────────────────────────────
+    /** The dry-run plan for "Render all videos", for the current checkbox. */
+    let renderPlan = { includeRecorded: null, jobs: null, error: null, loading: false };
+
+    async function loadRenderPlan() {
+      const includeRecorded = $('includeRecorded').checked;
+      renderPlan = { includeRecorded, jobs: null, error: null, loading: true };
+      renderRendersPanel();
+      try {
+        const response = await api('/admin/renders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dryRun: true, includeRecorded, siteUrl: siteUrl() }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        if (renderPlan.includeRecorded !== includeRecorded) return;
+        renderPlan = { includeRecorded, jobs: body.jobs, error: null, loading: false };
+      } catch (error) {
+        if (renderPlan.includeRecorded !== includeRecorded) return;
+        renderPlan = { includeRecorded, jobs: null, error: error.message, loading: false };
+      }
+      renderRendersPanel();
+    }
+
+    function estimateSeconds(jobs) {
+      return jobs.reduce((total, job) => total + job.durationSeconds + SETUP_SECONDS, 0);
+    }
+
+    function jobName(job) {
+      return `${job.title}${job.label ? ` — ${job.label}` : ''}`;
+    }
+
+    function renderRendersPanel() {
+      const dialog = $('rendersDialog');
+      if (!dialog.open) return;
+      const running = renderRunning();
+      const run = state.run;
+      const jobs = runJobs();
+
+      // Start
+      $('renderStart').hidden = running;
+      if (!running) {
+        const { jobs: planned, error, loading } = renderPlan;
+        $('renderPlan').textContent = loading
+          ? 'Counting scenes…'
+          : error
+            ? `Couldn't plan the batch: ${error}`
+            : planned && planned.length === 0
+              ? 'Nothing to render: every scene is marked recorded.'
+              : planned
+                ? `${planned.length} scene${planned.length === 1 ? '' : 's'}, about ${formatMinutes(estimateSeconds(planned))} — captures run in real time, one after another.`
+                : '';
+        $('renderAll').disabled = loading || !planned || planned.length === 0;
+        $('renderAll').textContent = planned?.length ? `Render all videos (${planned.length})` : 'Render all videos';
+      }
+
+      // Progress
+      const progress = $('renderProgress');
+      progress.hidden = !running;
+      if (running) {
+        const finished = jobs.filter(job => job.status === 'done' || job.status === 'failed');
+        const failed = finished.filter(job => job.status === 'failed').length;
+        const fraction = jobs.length ? jobs.reduce((sum, job) => sum + jobFraction(job), 0) / jobs.length : 0;
+        const current = jobs.find(job => job.status === 'rendering');
+        const remaining = jobs.filter(job => job.status === 'queued' || job.status === 'rendering');
+        const left = Math.max(
+          0,
+          estimateSeconds(remaining) - (current?.startedAt ? (Date.now() - current.startedAt) / 1000 : 0),
+        );
+        let html = `
+          <div class="section-title">Rendering</div>
+          <div class="progress-line">
+            <span><strong>${finished.length}</strong> of ${jobs.length || '…'} done${failed ? ` · ${failed} failed` : ''}</span>
+            <span>${jobs.length ? `~${formatMinutes(left)} left` : 'starting…'}</span>
+          </div>
+          <div class="bar"><span class="bar-fill" style="width: ${(fraction * 100).toFixed(1)}%"></span></div>`;
+        if (current) {
+          const capturing = current.step?.startsWith('capturing');
+          const elapsed = capturing ? Math.min(current.durationSeconds, (Date.now() - current.stepStartedAt) / 1000) : 0;
+          html += `
+            <div class="progress-line" style="margin-top: 8px;">
+              <span><strong>${escapeHtml(jobName(current))}</strong></span>
+              <span class="mono">${capturing ? `${Math.round(elapsed)}s / ${Math.round(current.durationSeconds)}s` : ''}</span>
+            </div>
+            <div class="hint">${escapeHtml(current.step || 'starting')}</div>
+            ${capturing ? `<div class="bar"><span class="bar-fill" style="width: ${((elapsed / current.durationSeconds) * 100).toFixed(1)}%"></span></div>` : ''}`;
+        }
+        $('renderProgressBody').innerHTML = html;
+      }
+
+      // Last result
+      const result = $('renderResult');
+      result.hidden = running || !run;
+      if (!running && run) {
+        const failed = jobs.some(job => job.status === 'failed' && !isCancelled(job));
+        const when = new Date(run.finishedAt ?? run.startedAt).toLocaleTimeString();
+        result.textContent = run.error
+          ? `Last run failed (${when}): ${run.error}`
+          : `Last run${run.cancelled ? ' (cancelled)' : ''}, ${when}: ${runSummary(jobs)}.`;
+        result.className = `result ${run.error || failed ? 'error' : 'ok'}`;
+      }
+
+      // Queue
+      $('renderQueueWrap').hidden = jobs.length === 0;
+      $('renderQueue').innerHTML = jobs.map(job => {
+        const icon = isCancelled(job) ? '–' : { queued: '·', rendering: '●', done: '✓', failed: '✗' }[job.status];
+        const video = state.renders[job.clipId];
+        const meta = job.status === 'rendering'
+          ? escapeHtml(job.step || 'starting')
+          : job.status === 'failed'
+            ? escapeHtml(job.error || 'failed')
+            : `${job.durationSeconds.toFixed(0)}s`;
+        return `
+          <div class="queue-row ${isCancelled(job) ? 'queued' : job.status}" role="button" tabindex="0" data-filename="${escapeHtml(job.filename)}" data-id="${escapeHtml(job.clipId)}"
+            title="${escapeHtml(job.error || 'Open this scene in the editor')}">
+            <span class="q-icon">${icon}</span>
+            <span class="q-text">${escapeHtml(jobName(job))}</span>
+            <span class="q-meta">${meta}</span>
+            ${job.status === 'done' && video ? `<a href="${escapeHtml(video.url)}" target="_blank" rel="noopener">🎞 video</a>` : ''}
+          </div>`;
+      }).join('');
+
+      // Log: kept pinned to the bottom unless you've scrolled up to read.
+      $('renderLogWrap').hidden = !run;
+      const log = $('renderLog');
+      const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+      log.textContent = run ? run.log.join('\n') : '';
+      if (pinned) log.scrollTop = log.scrollHeight;
+
+      $('archiveBtn').disabled = running;
+      $('archiveBtn').title = running ? 'Archive once the render finishes' : '';
+    }
+
+    function openRenders() {
+      $('rendersDialog').showModal();
+      if (!renderRunning()) void loadRenderPlan();
+      renderRendersPanel();
+    }
+
+    /** Open a queued scene in the editor: its track, then the scene itself. */
+    async function openScene(filename, id) {
+      $('rendersDialog').close();
+      if (state.current?.filename !== filename) await loadTrack(filename);
+      if (state.current?.filename !== filename) return;
+      if (currentClips().some(clip => clip.id === id)) {
+        selectScene(id);
+        const clip = selectedClip();
+        if (clip) seek(clip.startMs / 1000);
+        $('sceneList').querySelector('.scene.selected')?.scrollIntoView({ block: 'nearest' });
+      }
+    }
+
+    async function archiveRecordingsFolder() {
+      try {
+        const planned = await api('/admin/recordings/archive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dryRun: true }),
+        });
+        const plan = await planned.json().catch(() => ({}));
+        if (!planned.ok) throw new Error(plan.error || `HTTP ${planned.status}`);
+        if (plan.moved.length === 0) {
+          setStatus('recordings/ is already clean', 'ok');
+          return;
+        }
+        const n = plan.moved.length;
+        // The folder is stamped when the move runs, so name its parent, not the dry run's stamp.
+        if (!confirm(`Move ${n} item${n === 1 ? '' : 's'} from recordings/ into a new dated folder in recordings/backup/?`)) return;
+
+        const response = await api('/admin/recordings/archive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        setStatus(`Archived ${body.moved.length} item(s) to ${body.target}/`, 'ok');
+        await refreshScenes();
+      } catch (error) {
+        setStatus(`Archive failed: ${error.message}`, 'error');
+      }
+    }
+
+    $('rendersBtn').addEventListener('click', openRenders);
+    $('cancelRender').addEventListener('click', cancelRender);
+    $('rendersClose').addEventListener('click', () => $('rendersDialog').close());
+    $('includeRecorded').addEventListener('change', () => void loadRenderPlan());
+    $('renderAll').addEventListener('click', () => {
+      void startRender({ includeRecorded: $('includeRecorded').checked });
+    });
+    $('archiveBtn').addEventListener('click', archiveRecordingsFolder);
+    $('renderQueue').addEventListener('click', event => {
+      if (event.target.closest('a')) return;
+      const row = event.target.closest('.queue-row');
+      if (row) void openScene(row.dataset.filename, row.dataset.id);
+    });
+    $('renderQueue').addEventListener('keydown', event => {
+      const row = event.target.closest('.queue-row');
+      if (row && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        void openScene(row.dataset.filename, row.dataset.id);
+      }
+    });
+
+    // ========================================================================
     // Event wiring
     // ========================================================================
     function timeAtOverview(event) {
@@ -2172,6 +2857,9 @@
       $('setOut').addEventListener('click', setOut);
       $('addScene').addEventListener('click', addScene);
       $('clearSel').addEventListener('click', clearSelection);
+      $('renderTrack').addEventListener('click', () => {
+        if (state.current) void startRender({ track: state.current.filename });
+      });
 
       // Overview: click seeks, drag selects a range for a new scene.
       const overview = $('overview');
@@ -2216,6 +2904,8 @@
         // selecting does) would swap it out mid-click and the change would never
         // fire, so its clicks skip the select-and-seek below.
         if (event.target.closest('.recorded-toggle')) return;
+        // The video link opens in a tab; it isn't a click on the row.
+        if (event.target.closest('a')) return;
         const row = event.target.closest('.scene');
         if (!row) return;
         const id = row.dataset.id;
@@ -2259,6 +2949,9 @@
           case 'theme':
             focusScene(id);
             void updateScene(id, { theme: button.dataset.theme });
+            break;
+          case 'render':
+            void startRender({ clipId: id });
             break;
           case 'delete':
             if (!confirm(`Delete the scene at ${formatShort(clip.startMs / 1000)}?`)) return;
@@ -2307,6 +3000,8 @@
     }
 
     document.addEventListener('keydown', event => {
+      // The renders drawer is modal: its keys (Esc closes it) aren't the editor's.
+      if ($('rendersDialog').open) return;
       const target = event.target;
       if (target instanceof Element && target.closest('input, textarea, select')) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -2467,12 +3162,13 @@
         const [tracksResponse, clipsResponse] = await Promise.all([fetch('/api/tracks'), api('/admin/clips')]);
         if (!tracksResponse.ok || !clipsResponse.ok) throw new Error('could not load tracks or scenes');
         const { tracks } = await tracksResponse.json();
-        const { clips, defaultPulse: serverDefault, glowControls: serverGlow } = await clipsResponse.json();
+        const { clips, renders, defaultPulse: serverDefault, glowControls: serverGlow } = await clipsResponse.json();
         if (serverDefault && typeof serverDefault.amount === 'number') defaultPulse = serverDefault;
         if (serverGlow?.numbers && serverGlow?.flags) glowControls = serverGlow;
         buildGlowPanel();
         state.tracks = tracks.map(track => ({ ...track, filename: filenameOf(track) }));
         state.clips = clips;
+        state.renders = renders || {};
       } catch (error) {
         if (error.message !== 'Unauthorized') showAuth(`Failed to load: ${error.message}`);
         return;
@@ -2482,6 +3178,8 @@
       $('app').hidden = false;
       renderTrackList();
       fitStage();
+      // Pick up a run started earlier (or in another tab) and still going.
+      void pollRenders();
 
       // Reopen the track in the URL hash, so a reload lands back where you were.
       const fromHash = decodeURIComponent(location.hash.slice(1));

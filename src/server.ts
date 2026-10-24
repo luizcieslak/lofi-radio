@@ -10,10 +10,13 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer from 'multer'
+import { archiveRecordings } from '../scripts/archiveRecordings'
 import { normalizeInPlace } from './audioNormalizer'
 import { validateClips } from './clipValidation'
 import { metadataManager } from './metadataManager'
 import { playlistManager } from './playlistManager'
+import { OUTPUT_DIR, recordingFilename } from './recordingPaths'
+import { type RenderScope, renderRunner } from './renderRunner'
 import { GLOW_FLAGS, GLOW_NUMBERS } from './sceneGlow'
 import { DEFAULT_SCENE_PULSE } from './scenePulse'
 import { StreamEngine } from './streamEngine'
@@ -36,6 +39,8 @@ playlistManager.setSkipCallback(() => {
 // ============================================================================
 
 const SONGS_DIR = path.join(__dirname, '../songs')
+const RECORDINGS_DIR = path.join(__dirname, '..', OUTPUT_DIR)
+const PORT = process.env.PORT || 5634
 
 // Ensure songs directory exists
 if (!fs.existsSync(SONGS_DIR)) {
@@ -604,14 +609,193 @@ app.put('/admin/tracks/:filename/clips', requireAuth, (req: Request, res: Respon
  * GET /admin/clips
  */
 app.get('/admin/clips', requireAuth, (_req: Request, res: Response) => {
+	const clips = metadataManager.getAllClips()
 	// The default pulse rides along so the editor applies exactly what the
 	// recorder will, without keeping its own copy.
 	res.json({
-		clips: metadataManager.getAllClips(),
+		clips,
+		renders: findRenders(clips),
 		defaultPulse: DEFAULT_SCENE_PULSE,
 		// The editor builds its glow panel from these, so it can't drift from validation.
 		glowControls: { numbers: GLOW_NUMBERS, flags: GLOW_FLAGS },
 	})
+})
+
+/** Where a scene's render can be fetched: GET /api/recordings/:file. */
+interface SceneRender {
+	url: string
+	sizeBytes: number
+	/** The file's mtime (epoch ms). */
+	renderedAt: number
+}
+
+/**
+ * The render of every scene that has one, keyed by scene id.
+ *
+ * Looked up on disk by the recorder's own naming (src/recordingPaths.ts) rather
+ * than stored on the scene, so it is never stale: an archived or deleted render
+ * simply stops being found. `?v=` busts the cache when a scene is re-rendered.
+ */
+function findRenders(clips: Record<string, { id: string }[]>): Record<string, SceneRender> {
+	const renders: Record<string, SceneRender> = {}
+	for (const [filename, trackClips] of Object.entries(clips)) {
+		for (const clip of trackClips) {
+			const file = recordingFilename(filename, clip.id)
+			try {
+				const stats = fs.statSync(path.join(RECORDINGS_DIR, file))
+				if (!stats.isFile()) continue
+				renders[clip.id] = {
+					url: `/api/recordings/${encodeURIComponent(file)}?v=${Math.round(stats.mtimeMs)}`,
+					sizeBytes: stats.size,
+					renderedAt: Math.round(stats.mtimeMs),
+				}
+			} catch {
+				// Not rendered (yet).
+			}
+		}
+	}
+	return renders
+}
+
+/**
+ * A rendered scene video.
+ * GET /api/recordings/:file
+ *
+ * Public, like the source audio above, so the editor can link and play it with a
+ * plain <a>/<video>, which cannot send an API key. Only top-level MP4s are served,
+ * never `backup/` or the recorder's `.work-*` dirs. One more reason this branch
+ * must not be deployed.
+ */
+app.get('/api/recordings/:file', (req: Request, res: Response) => {
+	const file = req.params.file
+	if (!file || !/^[^/\\]+\.mp4$/.test(file) || file.startsWith('.')) {
+		res.status(400).json({ error: 'Invalid recording name' })
+		return
+	}
+	const filepath = path.join(RECORDINGS_DIR, file)
+	if (path.dirname(filepath) !== RECORDINGS_DIR || !fs.existsSync(filepath)) {
+		res.status(404).json({ error: 'Recording not found' })
+		return
+	}
+	// sendFile answers Range requests, so the video can seek.
+	res.sendFile(filepath)
+})
+
+/**
+ * Read a render request's scope. `clipId` renders one scene (even if marked
+ * recorded, as `--clip` does); `track` that track's scenes; neither, every scene.
+ */
+function parseRenderScope(body: unknown): { ok: true; scope: RenderScope } | { ok: false; error: string } {
+	const field = (key: string): unknown =>
+		typeof body === 'object' && body !== null ? Reflect.get(body, key) : undefined
+	const clipId = field('clipId')
+	const track = field('track')
+	const includeRecorded = field('includeRecorded') === true
+	if (clipId !== undefined && track !== undefined)
+		return { ok: false, error: 'Pass clipId or track, not both' }
+	if (clipId !== undefined) {
+		if (typeof clipId !== 'string' || clipId === '') return { ok: false, error: 'clipId must be a string' }
+		return { ok: true, scope: { kind: 'clip', clipId } }
+	}
+	if (track !== undefined) {
+		if (typeof track !== 'string' || track === '') return { ok: false, error: 'track must be a filename' }
+		return { ok: true, scope: { kind: 'track', filename: track, includeRecorded } }
+	}
+	return { ok: true, scope: { kind: 'all', includeRecorded } }
+}
+
+/** The site to film; only http(s), since it ends up in a browser's address bar. */
+function parseSiteUrl(value: unknown): { ok: true; siteUrl?: string } | { ok: false; error: string } {
+	if (value === undefined || value === '') return { ok: true }
+	if (typeof value !== 'string') return { ok: false, error: 'siteUrl must be a string' }
+	try {
+		const url = new URL(value)
+		if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('protocol')
+		return { ok: true, siteUrl: value.replace(/\/+$/, '') }
+	} catch {
+		return { ok: false, error: 'siteUrl must be an http(s) URL' }
+	}
+}
+
+/**
+ * Start a render of scenes, or with `dryRun` only plan one.
+ * POST /admin/renders
+ * Body: { clipId? | track?, includeRecorded?, dryRun?, siteUrl? }
+ *
+ * Runs scripts/recordClips.ts (src/renderRunner.ts). A dry run answers
+ * `{ jobs }` — what would render — and leaves the current run alone; a real one
+ * answers the run snapshot, which GET /admin/renders then tracks.
+ */
+app.post('/admin/renders', requireAuth, async (req: Request, res: Response) => {
+	const scope = parseRenderScope(req.body)
+	if (!scope.ok) {
+		res.status(400).json({ error: scope.error })
+		return
+	}
+	const site = parseSiteUrl(req.body?.siteUrl)
+	if (!site.ok) {
+		res.status(400).json({ error: site.error })
+		return
+	}
+	const environment = { radioUrl: `http://localhost:${PORT}`, siteUrl: site.siteUrl }
+
+	if (req.body?.dryRun === true) {
+		try {
+			res.json({ jobs: await renderRunner.plan(scope.scope, environment) })
+		} catch (error) {
+			res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+		}
+		return
+	}
+
+	if (renderRunner.isRunning()) {
+		res.status(409).json({ error: 'A render is already running', run: renderRunner.snapshot() })
+		return
+	}
+	res.json({ run: renderRunner.start(scope.scope, environment) })
+})
+
+/**
+ * The current (or last) render run, polled by the editor while one is active.
+ * GET /admin/renders
+ */
+app.get('/admin/renders', requireAuth, (_req: Request, res: Response) => {
+	res.json({ run: renderRunner.snapshot() })
+})
+
+/**
+ * Cancel the running render.
+ * DELETE /admin/renders
+ */
+app.delete('/admin/renders', requireAuth, (_req: Request, res: Response) => {
+	if (!renderRunner.cancel()) {
+		res.status(409).json({ error: 'No render is running' })
+		return
+	}
+	res.json({ run: renderRunner.snapshot() })
+})
+
+/**
+ * Move every render into recordings/backup/<stamp>/ (scripts/archiveRecordings.ts).
+ * POST /admin/recordings/archive
+ * Body: { dryRun? }  — a dry run lists what would move, for the confirmation.
+ *
+ * Refused mid-render: it would move a batch's finished files out from under it.
+ */
+app.post('/admin/recordings/archive', requireAuth, async (req: Request, res: Response) => {
+	if (renderRunner.isRunning()) {
+		res.status(409).json({ error: 'A render is running; archive once it finishes' })
+		return
+	}
+	try {
+		const result = await archiveRecordings({ dryRun: req.body?.dryRun === true, outputDir: RECORDINGS_DIR })
+		res.json({
+			moved: result.moved,
+			target: result.target && path.relative(path.join(__dirname, '..'), result.target),
+		})
+	} catch (error) {
+		res.status(500).json({ error: error instanceof Error ? error.message : String(error) })
+	}
 })
 
 /**
@@ -684,6 +868,8 @@ engine.start(
 // Graceful shutdown
 const shutdown = () => {
 	console.log('\nShutting down...')
+	// A render left running would orphan its browser past the server's exit.
+	renderRunner.cancel()
 	engine.stop()
 	playlistManager.stop()
 	process.exit(0)
@@ -693,7 +879,6 @@ process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)
 
 // Start listening
-const PORT = process.env.PORT || 5634
 
 app.listen(PORT, () => {
 	console.log(`
